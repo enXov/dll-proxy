@@ -17,6 +17,8 @@ cmake_install.cmake
 
 # Compiled binaries
 *.dll
+!original_dlls/*.dll
+!original_dlls/**/*.dll
 *.exe
 *.lib
 *.exp
