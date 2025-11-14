@@ -1,0 +1,5 @@
+# Python dependencies for extract_exports.py
+# Install with: pip install -r requirements.txt
+
+pefile>=2023.2.7
+
