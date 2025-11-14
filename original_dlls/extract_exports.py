@@ -77,6 +77,7 @@ def generate_header(dll_name, exports):
     """
     Generate C/C++ header file with MSVC pragma export forwarding.
     Uses GLOBALROOT path inspired by Perfect DLL Proxy for maximum compatibility.
+    Uses macro-based approach for cleaner, more maintainable code.
     
     Args:
         dll_name: Name of the DLL (e.g., "version.dll")
@@ -115,14 +116,20 @@ def generate_header(dll_name, exports):
 #ifndef {base_name}_EXPORTS_H
 #define {base_name}_EXPORTS_H
 
-// Export forwarding pragmas (x64 only)
-// Format: #pragma comment(linker, "/EXPORT:FunctionName=Path.FunctionName,@Ordinal")
+// Original DLL path (GLOBALROOT for maximum compatibility)
+#define ORIGINAL_DLL "{original_path}"
 
+// Export forwarding macro
+// Usage: MAKE_EXPORT(FunctionName, Ordinal)
+#define MAKE_EXPORT(name, ordinal) \\
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
+
+// Export definitions
 """
     
-    # Add each export with GLOBALROOT path
+    # Add each export using the macro (much cleaner!)
     for func_name, ordinal in exports:
-        header += f'#pragma comment(linker, "/EXPORT:{func_name}={original_path}.{func_name},@{ordinal}")\n'
+        header += f'MAKE_EXPORT({func_name}, {ordinal})\n'
     
     header += f"""
 #endif // {base_name}_EXPORTS_H
