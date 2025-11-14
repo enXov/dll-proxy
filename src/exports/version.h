@@ -24,12 +24,21 @@
 // Original DLL path (GLOBALROOT for maximum compatibility)
 #define ORIGINAL_DLL "\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll"
 
-// Export forwarding macro
-// Usage: MAKE_EXPORT(FunctionName, Ordinal)
+// Export forwarding macros (like Perfect DLL Proxy)
+
+// Regular export: Named function with ordinal
 #define MAKE_EXPORT(name, ordinal) \
     __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
 
-// Export definitions
+// COM export: Named function with PRIVATE flag (not in import library)
+#define MAKE_EXPORT_PRIVATE(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal ",PRIVATE"))
+
+// Ordinal-only export: No name, only ordinal number with NONAME flag
+#define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #proxy_name "=" ORIGINAL_DLL ".#" #ordinal ",@" #ordinal ",NONAME"))
+
+// Regular exports
 MAKE_EXPORT(GetFileVersionInfoA, 1)
 MAKE_EXPORT(GetFileVersionInfoByHandle, 2)
 MAKE_EXPORT(GetFileVersionInfoExA, 3)
