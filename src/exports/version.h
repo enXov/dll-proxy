@@ -21,25 +21,31 @@
 #ifndef VERSION_EXPORTS_H
 #define VERSION_EXPORTS_H
 
-// Export forwarding pragmas (x64 only)
-// Format: #pragma comment(linker, "/EXPORT:FunctionName=Path.FunctionName,@Ordinal")
+// Original DLL path (GLOBALROOT for maximum compatibility)
+#define ORIGINAL_DLL "\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll"
 
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoA,@1")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoByHandle=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoByHandle,@2")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoExA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoExA,@3")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoExW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoExW,@4")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoSizeA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoSizeA,@5")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoSizeExA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoSizeExA,@6")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoSizeExW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoSizeExW,@7")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoSizeW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoSizeW,@8")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.GetFileVersionInfoW,@9")
-#pragma comment(linker, "/EXPORT:VerFindFileA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerFindFileA,@10")
-#pragma comment(linker, "/EXPORT:VerFindFileW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerFindFileW,@11")
-#pragma comment(linker, "/EXPORT:VerInstallFileA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerInstallFileA,@12")
-#pragma comment(linker, "/EXPORT:VerInstallFileW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerInstallFileW,@13")
-#pragma comment(linker, "/EXPORT:VerLanguageNameA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerLanguageNameA,@14")
-#pragma comment(linker, "/EXPORT:VerLanguageNameW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerLanguageNameW,@15")
-#pragma comment(linker, "/EXPORT:VerQueryValueA=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerQueryValueA,@16")
-#pragma comment(linker, "/EXPORT:VerQueryValueW=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll.VerQueryValueW,@17")
+// Export forwarding macro
+// Usage: MAKE_EXPORT(FunctionName, Ordinal)
+#define MAKE_EXPORT(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
+
+// Export definitions
+MAKE_EXPORT(GetFileVersionInfoA, 1)
+MAKE_EXPORT(GetFileVersionInfoByHandle, 2)
+MAKE_EXPORT(GetFileVersionInfoExA, 3)
+MAKE_EXPORT(GetFileVersionInfoExW, 4)
+MAKE_EXPORT(GetFileVersionInfoSizeA, 5)
+MAKE_EXPORT(GetFileVersionInfoSizeExA, 6)
+MAKE_EXPORT(GetFileVersionInfoSizeExW, 7)
+MAKE_EXPORT(GetFileVersionInfoSizeW, 8)
+MAKE_EXPORT(GetFileVersionInfoW, 9)
+MAKE_EXPORT(VerFindFileA, 10)
+MAKE_EXPORT(VerFindFileW, 11)
+MAKE_EXPORT(VerInstallFileA, 12)
+MAKE_EXPORT(VerInstallFileW, 13)
+MAKE_EXPORT(VerLanguageNameA, 14)
+MAKE_EXPORT(VerLanguageNameW, 15)
+MAKE_EXPORT(VerQueryValueA, 16)
+MAKE_EXPORT(VerQueryValueW, 17)
 
 #endif // VERSION_EXPORTS_H
