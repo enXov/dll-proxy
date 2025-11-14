@@ -2,16 +2,29 @@
 
 This directory contains original Windows DLL files used for export extraction and proxy generation.
 
+## Features
+
+✨ **Complete Perfect DLL Proxy feature parity (x64)**
+
+- **GLOBALROOT paths** - NT kernel-level paths for maximum compatibility
+- **Macro-based exports** - Clean, readable, maintainable code  
+- **Three export types** - Regular, COM/PRIVATE, ordinal-only (auto-detected)
+- **Optional ordinals** - `--no-ordinals` flag for edge cases
+- **Automatic detection** - Script auto-detects COM functions and ordinal-only exports
+
 ## Quick Start
 
 ### Extract Exports from a DLL
 
 ```bash
-# Extract exports from version.dll
+# Extract exports from version.dll (with ordinals - recommended)
 python extract_exports.py version.dll
 
 # Extract exports from all DLLs in this directory
 python extract_exports.py -a
+
+# Extract without ordinals (edge cases only - breaks ordinal-based imports)
+python extract_exports.py version.dll --no-ordinals
 ```
 
 The script will automatically generate a header file in `../src/exports/` ready for use with CMake.
@@ -54,8 +67,9 @@ python extract_exports.py winmm.dll
 
 This will:
 1. Parse the DLL and extract all exported functions
-2. Generate a header file with MSVC pragma forwarding directives
-3. Save it to `../src/exports/winmm.h`
+2. Auto-detect export types (regular, COM/PRIVATE, ordinal-only)
+3. Generate a header file with MSVC pragma forwarding directives using GLOBALROOT paths
+4. Save it to `../src/exports/winmm.h`
 
 ### Step 3: Verify Generated Header
 
@@ -65,10 +79,20 @@ Check the generated header file:
 cat ../src/exports/winmm.h
 ```
 
-You should see pragma directives like:
+You should see macro-based exports with GLOBALROOT paths:
 
 ```cpp
-#pragma comment(linker, "/EXPORT:FunctionName=C:\\Windows\\System32\\winmm.dll.FunctionName,@1")
+// Original DLL path (GLOBALROOT for maximum compatibility)
+#define ORIGINAL_DLL "\\\\.\\GLOBALROOT\\SystemRoot\\System32\\winmm.dll"
+
+// Export forwarding macros
+#define MAKE_EXPORT(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
+
+// Regular exports
+MAKE_EXPORT(PlaySoundA, 1)
+MAKE_EXPORT(PlaySoundW, 2)
+// ... more exports
 ```
 
 ### Step 4: Update CMakeLists.txt
@@ -134,6 +158,18 @@ python extract_exports.py version.dll -q
 python extract_exports.py version.dll -o /custom/path/
 ```
 
+### Without Ordinals (Edge Cases Only)
+
+```bash
+# Not recommended - breaks programs that import by ordinal number
+python extract_exports.py version.dll --no-ordinals
+```
+
+**When to use `--no-ordinals`:**
+- DLL version mismatches between Windows versions
+- Debugging import issues
+- **Warning:** This breaks programs that import functions by ordinal number!
+
 ## Common Target DLLs
 
 Here are commonly hijackable Windows DLLs for research:
@@ -158,12 +194,47 @@ Arguments:
   DLL_FILE              DLL filename to process (e.g., version.dll)
 
 Options:
-  -a, --all            Process all DLL files in directory
-  -o, --output DIR     Custom output directory for headers
-  -q, --quiet          Suppress detailed output
-  --list               List all available DLL files
-  -h, --help           Show help message
+  -a, --all             Process all DLL files in directory
+  -o, --output DIR      Custom output directory for headers
+  -q, --quiet           Suppress detailed output
+  --list                List all available DLL files
+  --no-ordinals         Disable ordinals (not recommended, breaks ordinal-based imports)
+  -h, --help            Show help message
 ```
+
+## Export Types
+
+The script automatically detects and handles three types of exports:
+
+### 1. Regular Exports (Most Common)
+Named functions with ordinals:
+```cpp
+MAKE_EXPORT(GetFileVersionInfoA, 1)
+// Generates: /EXPORT:GetFileVersionInfoA=...dll.GetFileVersionInfoA,@1
+```
+
+### 2. COM/PRIVATE Exports
+COM functions with PRIVATE flag (not in import library):
+```cpp
+MAKE_EXPORT_PRIVATE(DllGetClassObject, 5)
+// Generates: /EXPORT:DllGetClassObject=...dll.DllGetClassObject,@5,PRIVATE
+```
+
+**Auto-detected COM functions:**
+- `DllCanUnloadNow`
+- `DllGetClassObject`
+- `DllInstall`
+- `DllRegisterServer`
+- `DllUnregisterServer`
+
+### 3. Ordinal-Only Exports
+Exports with no name, only ordinal number:
+```cpp
+MAKE_EXPORT_ORDINAL(__proxy123, 123)
+// Generates: /EXPORT:__proxy123=...dll.#123,@123,NONAME
+```
+
+Common in: `ws2_32.dll`, `kernel32.dll` (legacy exports)
 
 ## Troubleshooting
 
@@ -202,10 +273,11 @@ Ensure you copied a valid Windows DLL file (not a shortcut or corrupted file).
 
 The generated header includes:
 
-1. **File header** with metadata
-2. **Export count** and original DLL path
-3. **Pragma directives** for each export
-4. **Header guards** to prevent multiple inclusion
+1. **File header** with metadata (export count, ordinal status, DLL path)
+2. **GLOBALROOT path definition** for maximum compatibility
+3. **Three export macros** (MAKE_EXPORT, MAKE_EXPORT_PRIVATE, MAKE_EXPORT_ORDINAL)
+4. **Categorized exports** (regular, COM/PRIVATE, ordinal-only)
+5. **Header guards** to prevent multiple inclusion
 
 Example output structure:
 
@@ -213,15 +285,37 @@ Example output structure:
 #pragma once
 /*
  * Auto-generated export forwarding header for version.dll
- * Total Exports: 17
- * Original DLL Path: C:\Windows\System32\version.dll
+ * Generated by extract_exports.py
+ * Inspired by Perfect DLL Proxy (https://github.com/mrexodia/perfect-dll-proxy)
+ * 
+ * Total Exports: 17 (with ordinals)
+ * Original DLL Path: \\.\GLOBALROOT\SystemRoot\System32\version.dll
+ * Architecture: x64 only
  */
 
 #ifndef VERSION_EXPORTS_H
 #define VERSION_EXPORTS_H
 
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoA=C:\\Windows\\System32\\version.dll.GetFileVersionInfoA,@1")
-#pragma comment(linker, "/EXPORT:GetFileVersionInfoByHandle=C:\\Windows\\System32\\version.dll.GetFileVersionInfoByHandle,@2")
+// Original DLL path (GLOBALROOT for maximum compatibility)
+#define ORIGINAL_DLL "\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll"
+
+// Export forwarding macros (like Perfect DLL Proxy)
+
+// Regular export: Named function with ordinal
+#define MAKE_EXPORT(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
+
+// COM export: Named function with PRIVATE flag (not in import library)
+#define MAKE_EXPORT_PRIVATE(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal ",PRIVATE"))
+
+// Ordinal-only export: No name, only ordinal number with NONAME flag
+#define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #proxy_name "=" ORIGINAL_DLL ".#" #ordinal ",@" #ordinal ",NONAME"))
+
+// Regular exports
+MAKE_EXPORT(GetFileVersionInfoA, 1)
+MAKE_EXPORT(GetFileVersionInfoByHandle, 2)
 // ... more exports ...
 
 #endif // VERSION_EXPORTS_H
@@ -229,16 +323,56 @@ Example output structure:
 
 ## Advanced Usage
 
+### Why GLOBALROOT Paths?
+
+The script uses GLOBALROOT paths instead of traditional `C:\Windows\System32\`:
+
+```cpp
+// Traditional path (less compatible)
+C:\\Windows\\System32\\version.dll
+
+// GLOBALROOT path (maximum compatibility)
+\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll
+```
+
+**Benefits:**
+- Works regardless of Windows installation directory
+- NT kernel-level path resolution
+- More robust across different Windows configurations
+- Inspired by Perfect DLL Proxy
+
+### Why Ordinals Matter
+
+Programs can import DLL functions in two ways:
+
+**By name (most common):**
+```cpp
+GetProcAddress(hDll, "GetFileVersionInfoA");  // Uses function name
+```
+
+**By ordinal (less common, but exists):**
+```cpp
+GetProcAddress(hDll, MAKEINTRESOURCE(1));  // Uses ordinal number
+```
+
+**With ordinals (`@1`):** ✅ Works with both import methods  
+**Without ordinals:** ❌ Breaks programs that import by ordinal
+
+**When to disable ordinals:**
+- DLL version mismatches between Windows versions
+- Debugging import issues
+- **99% of the time, keep ordinals enabled!**
+
 ### Custom Original DLL Path
 
-If you need to forward to a DLL at a custom location, edit the generated header's pragma directives:
+If you need to forward to a DLL at a custom location, edit the generated header's `ORIGINAL_DLL` definition:
 
 ```cpp
 // Instead of:
-#pragma comment(linker, "/EXPORT:FuncName=C:\\Windows\\System32\\dll.dll.FuncName,@1")
+#define ORIGINAL_DLL "\\\\.\\GLOBALROOT\\SystemRoot\\System32\\version.dll"
 
 // Use:
-#pragma comment(linker, "/EXPORT:FuncName=C:\\Custom\\Path\\dll.dll.FuncName,@1")
+#define ORIGINAL_DLL "C:\\Custom\\Path\\version.dll"
 ```
 
 ### Handling DLL Name Conflicts
