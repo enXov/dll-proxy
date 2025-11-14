@@ -73,7 +73,7 @@ def extract_exports(dll_path):
         return None
 
 
-def generate_header(dll_name, exports):
+def generate_header(dll_name, exports, use_ordinals=True):
     """
     Generate C/C++ header file with MSVC pragma export forwarding.
     Uses GLOBALROOT path inspired by Perfect DLL Proxy for maximum compatibility.
@@ -83,6 +83,7 @@ def generate_header(dll_name, exports):
     Args:
         dll_name: Name of the DLL (e.g., "version.dll")
         exports: List of tuples (function_name, ordinal)
+        use_ordinals: Include ordinals in exports (default: True, recommended)
     
     Returns:
         String containing the header file content
@@ -120,15 +121,14 @@ def generate_header(dll_name, exports):
             regular_exports.append((func_name, ordinal))
     
     # Count export types
-    export_summary = f"Total Exports: {len(exports)}"
+    ordinal_status = "with ordinals" if use_ordinals else "without ordinals"
+    export_summary = f"Total Exports: {len(exports)} ({ordinal_status})"
     if private_exports:
-        export_summary += f" ({len(regular_exports)} regular, {len(private_exports)} COM/PRIVATE"
+        export_summary += f" - {len(regular_exports)} regular, {len(private_exports)} COM/PRIVATE"
         if ordinal_only_exports:
-            export_summary += f", {len(ordinal_only_exports)} ordinal-only)"
-        else:
-            export_summary += ")"
+            export_summary += f", {len(ordinal_only_exports)} ordinal-only"
     elif ordinal_only_exports:
-        export_summary += f" ({len(regular_exports)} regular, {len(ordinal_only_exports)} ordinal-only)"
+        export_summary += f" - {len(regular_exports)} regular, {len(ordinal_only_exports)} ordinal-only"
     
     header = f"""#pragma once
 /*
@@ -158,7 +158,11 @@ def generate_header(dll_name, exports):
 
 // Export forwarding macros (like Perfect DLL Proxy)
 
-// Regular export: Named function with ordinal
+"""
+    
+    # Add appropriate macros based on use_ordinals setting
+    if use_ordinals:
+        header += """// Regular export: Named function with ordinal
 #define MAKE_EXPORT(name, ordinal) \\
     __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
 
@@ -169,6 +173,20 @@ def generate_header(dll_name, exports):
 // Ordinal-only export: No name, only ordinal number with NONAME flag
 #define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \\
     __pragma(comment(linker, "/EXPORT:" #proxy_name "=" ORIGINAL_DLL ".#" #ordinal ",@" #ordinal ",NONAME"))
+
+"""
+    else:
+        header += """// Regular export: Named function without ordinal (auto-assigned by linker)
+#define MAKE_EXPORT(name, ordinal) \\
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name))
+
+// COM export: Named function with PRIVATE flag, no ordinal
+#define MAKE_EXPORT_PRIVATE(name, ordinal) \\
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",PRIVATE"))
+
+// Ordinal-only export: Cannot be used without ordinals - skipped
+#define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \\
+    /* Ordinal-only exports require ordinals - this export is skipped */
 
 """
     
@@ -243,7 +261,7 @@ def print_export_summary(dll_name, exports):
     print(f"{'='*60}\n")
 
 
-def process_dll(dll_filename, output_dir=None, verbose=True):
+def process_dll(dll_filename, output_dir=None, verbose=True, use_ordinals=True):
     """
     Process a single DLL file: extract exports and generate header.
     
@@ -251,6 +269,7 @@ def process_dll(dll_filename, output_dir=None, verbose=True):
         dll_filename: Name of DLL file to process
         output_dir: Custom output directory for header
         verbose: Print detailed information
+        use_ordinals: Include ordinals in exports (default: True)
     
     Returns:
         True if successful, False otherwise
@@ -275,7 +294,7 @@ def process_dll(dll_filename, output_dir=None, verbose=True):
         print_export_summary(dll_filename, exports)
     
     # Generate header
-    header_content = generate_header(dll_filename, exports)
+    header_content = generate_header(dll_filename, exports, use_ordinals)
     
     # Save header
     header_path = save_header(dll_filename, header_content, output_dir)
@@ -287,12 +306,13 @@ def process_dll(dll_filename, output_dir=None, verbose=True):
     return True
 
 
-def process_all_dlls(output_dir=None):
+def process_all_dlls(output_dir=None, use_ordinals=True):
     """
     Process all DLL files in the original_dlls directory.
     
     Args:
         output_dir: Custom output directory for headers
+        use_ordinals: Include ordinals in exports (default: True)
     
     Returns:
         Number of successfully processed DLLs
@@ -309,7 +329,7 @@ def process_all_dlls(output_dir=None):
     
     success_count = 0
     for dll_file in dll_files:
-        if process_dll(dll_file.name, output_dir):
+        if process_dll(dll_file.name, output_dir, verbose=True, use_ordinals=use_ordinals):
             success_count += 1
     
     print(f"\n{'='*60}")
@@ -369,6 +389,12 @@ Examples:
         help='List all available DLL files in directory'
     )
     
+    parser.add_argument(
+        '--no-ordinals',
+        action='store_true',
+        help='Disable ordinals in exports (not recommended, breaks ordinal-based imports)'
+    )
+    
     args = parser.parse_args()
     
     # List available DLLs
@@ -383,14 +409,17 @@ Examples:
             print("No DLL files found in directory.")
         return 0
     
+    # Determine ordinal usage
+    use_ordinals = not args.no_ordinals
+    
     # Process all DLLs
     if args.all:
-        success = process_all_dlls(args.output)
+        success = process_all_dlls(args.output, use_ordinals)
         return 0 if success > 0 else 1
     
     # Process single DLL
     if args.dll_file:
-        success = process_dll(args.dll_file, args.output, verbose=not args.quiet)
+        success = process_dll(args.dll_file, args.output, verbose=not args.quiet, use_ordinals=use_ordinals)
         return 0 if success else 1
     
     # No arguments provided
