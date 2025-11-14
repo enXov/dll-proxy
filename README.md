@@ -1,6 +1,6 @@
 # dll-proxy
 
-Clean DLL proxy generator using MSVC pragma forwarding - no .def, no .asm, no manual function stubs.
+Clean DLL proxy generator using MSVC pragma forwarding - no .def, no .asm, no manual function stubs. Windows x64 only.
 
 ## Why This Exists
 
@@ -35,7 +35,7 @@ Output: `build/Release/version.dll`
 
 - **Compiler**: MSVC (Visual Studio 2019+)
 - **Build**: CMake 3.15+
-- **Target**: Windows x64
+- **Target**: Windows x64 only (no 32-bit support)
 
 ## Supported DLLs
 
