@@ -54,10 +54,13 @@ def extract_exports(dll_path):
         exports = []
         for exp in pe.DIRECTORY_ENTRY_EXPORT.symbols:
             # Get function name (decode bytes to string if needed)
+            # Include ordinal-only exports (where exp.name is None)
             if exp.name:
                 func_name = exp.name.decode('utf-8') if isinstance(exp.name, bytes) else exp.name
-                ordinal = exp.ordinal
-                exports.append((func_name, ordinal))
+            else:
+                func_name = None  # Ordinal-only export
+            ordinal = exp.ordinal
+            exports.append((func_name, ordinal))
         
         # Sort by ordinal for consistent output
         exports.sort(key=lambda x: x[1])
@@ -254,7 +257,8 @@ def print_export_summary(dll_name, exports):
     print(f"{'-'*60}")
     
     for func_name, ordinal in exports[:10]:
-        print(f"{ordinal:<10} {func_name}")
+        display_name = func_name if func_name else "(ordinal-only)"
+        print(f"{ordinal:<10} {display_name}")
     
     if len(exports) > 10:
         print(f"... and {len(exports) - 10} more")

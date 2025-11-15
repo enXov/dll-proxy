@@ -34,11 +34,11 @@ That's it! Build, drop the DLL next to your target application, and your code ru
 
 ```bash
 mkdir build && cd build
-cmake -DDLL_TYPE=version ..
+cmake -DDLL_TYPE=version ..  # or winmm
 cmake --build . --config Release
 ```
 
-Output: `build/Release/version.dll`
+Output: `build/Release/version.dll` (or `winmm.dll`)
 
 ### Linux (GitHub Actions)
 
@@ -61,7 +61,8 @@ Output: `build/Release/version.dll`
 
 ## Supported DLLs
 
-- `version.dll`
+- `version.dll` (17 exports)
+- `winmm.dll` (181 exports) - The multimedia/audio DLL
 - More coming soon
 
 ## How It Works
