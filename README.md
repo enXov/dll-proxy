@@ -49,9 +49,32 @@ Output: `build/Release/version.dll` (or `winmm.dll`)
 
 ## Usage
 
+### Windows
+
 1. Build proxy DLL (e.g., `version.dll`)
 2. Place in target application directory
 3. Run application - payload executes on DLL load
+
+### Linux (Wine/Proton)
+
+1. Build proxy DLL via GitHub Actions
+2. Place DLL in the game/application directory
+3. Set DLL override environment variable:
+
+```bash
+# For Wine applications
+WINEDLLOVERRIDES="winmm=n,b" wine your_application.exe
+
+# For Steam games (add to launch options)
+WINEDLLOVERRIDES="winmm=n,b" %command%
+
+# Multiple DLLs
+WINEDLLOVERRIDES="winmm=n,b;version=n,b" %command%
+```
+
+**Override flags:**
+- `n` = native (load Windows DLL first)
+- `b` = builtin (fallback to Wine's builtin implementation)
 
 ## Requirements
 
