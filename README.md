@@ -1,7 +1,3 @@
-# dll-proxy
-
-Clean DLL proxy generator using MSVC pragma forwarding - no .def, no .asm, no manual function stubs. Windows x64 only.
-
 ## Why This Exists
 
 99% of DLL proxy projects use complex .def files, assembly stubs, or manual function reimplementation. This project uses pure MSVC pragma forwarding for the cleanest possible implementation.
@@ -57,6 +53,10 @@ No intermediate files. No assembly. Just clean forwarding.
 Many of the applications, tools, or whatever I used generally utilized something called winmm.dll, and after approximately 2-3 days of research, I decided to undertake this project.
 
 This implementation is heavily inspired by [Perfect DLL Proxy](https://github.com/mrexodia/perfect-dll-proxy) by mrexodia, which demonstrated the elegant pragma forwarding technique using `GLOBALROOT` paths.
+
+## Disclaimer
+
+This software is provided "as is" under the MIT License. As stated in the MIT License, we accept no responsibility or liability for any use or misuse of this tool.
 
 ## License
 
