@@ -1,3 +1,26 @@
+<div align="center">
+  <img src="screenshoots/1.png" width="45%"/>
+  <img src="screenshoots/2.png" width="45%"/>
+</div>
+
+---
+
+## It's This Simple
+
+**You don't need to know anything complex to get started.** Just edit this one function in `main.cpp`:
+
+```cpp
+// Payload function - your custom code goes here
+DWORD WINAPI Payload(LPVOID lpParam) {
+    MessageBoxA(NULL, "DLL Proxy Loaded!", "dll-proxy", MB_OK);
+    return 0;
+}
+```
+
+That's it! Build, drop the DLL next to your target application, and your code runs instantly.
+
+---
+
 ## Why This Exists
 
 99% of DLL proxy projects use complex .def files, assembly stubs, or manual function reimplementation. This project uses pure MSVC pragma forwarding for the cleanest possible implementation.
