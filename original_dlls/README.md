@@ -2,16 +2,6 @@
 
 This directory contains original Windows DLL files used for export extraction and proxy generation.
 
-## Features
-
-✨ **Complete Perfect DLL Proxy feature parity (x64)**
-
-- **GLOBALROOT paths** - NT kernel-level paths for maximum compatibility
-- **Macro-based exports** - Clean, readable, maintainable code  
-- **Three export types** - Regular, COM/PRIVATE, ordinal-only (auto-detected)
-- **Optional ordinals** - `--no-ordinals` flag for edge cases
-- **Automatic detection** - Script auto-detects COM functions and ordinal-only exports
-
 ## Quick Start
 
 ### Extract Exports from a DLL
@@ -169,21 +159,6 @@ python extract_exports.py version.dll --no-ordinals
 - DLL version mismatches between Windows versions
 - Debugging import issues
 - **Warning:** This breaks programs that import functions by ordinal number!
-
-## Common Target DLLs
-
-Here are commonly hijackable Windows DLLs for research:
-
-| DLL Name | Description | Common Usage |
-|----------|-------------|--------------|
-| `version.dll` | File version info API | Many applications |
-| `winmm.dll` | Windows Multimedia API | Games, audio apps |
-| `winhttp.dll` | HTTP services | Network applications |
-| `wininet.dll` | Internet API | Web browsers, downloaders |
-| `xinput1_3.dll` | Xbox controller input | Games |
-| `d3d9.dll` | Direct3D 9 | Games |
-| `d3d11.dll` | Direct3D 11 | Modern games |
-| `dwmapi.dll` | Desktop Window Manager | GUI applications |
 
 ## Script Options
 
@@ -391,15 +366,6 @@ Then extract separately:
 python extract_exports.py version_win10.dll
 python extract_exports.py version_win11.dll
 ```
-
-## Security Considerations
-
-⚠️ **Important:**
-
-- Only use DLL files from trusted sources
-- Verify DLL integrity before extraction
-- This tool is for research and educational purposes
-- Respect software licenses and terms of service
 
 ## Integration with dll-proxy Workflow
 

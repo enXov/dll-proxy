@@ -1,6 +1,9 @@
 <div align="center">
-  <img src="screenshoots/1.png" width="45%"/>
-  <img src="screenshoots/2.png" width="45%"/>
+  <img src="screenshoots/1.png" width="100%"/>
+</div>
+
+<div align="center">
+  <img src="screenshoots/2.png" width="100%"/>
 </div>
 
 ---
