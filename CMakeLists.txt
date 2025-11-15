@@ -1,11 +1,6 @@
 cmake_minimum_required(VERSION 3.15)
 project(dll-proxy LANGUAGES CXX)
 
-# Set default build type to Release for minimal size
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
-endif()
-
 # Enforce MSVC compiler only
 if(NOT MSVC)
     message(FATAL_ERROR "This project requires MSVC (Microsoft Visual C++ Compiler). "
@@ -66,26 +61,17 @@ if(MSVC)
         /Zc:__cplusplus  # Enable correct __cplusplus macro
     )
     
-    # Release optimizations for minimal size
+    # Release optimizations
     target_compile_options(${OUTPUT_NAME} PRIVATE
-        $<$<CONFIG:Release>:/O1>      # Minimize size (changed from /O2)
+        $<$<CONFIG:Release>:/O2>      # Maximum optimization
         $<$<CONFIG:Release>:/GL>      # Whole program optimization
-        $<$<CONFIG:Release>:/Gy>      # Enable function-level linking
     )
     
-    # Release linker optimizations for minimal size
+    # Release linker optimizations
     target_link_options(${OUTPUT_NAME} PRIVATE
-        $<$<CONFIG:Release>:/LTCG>       # Link-time code generation
-        $<$<CONFIG:Release>:/OPT:REF>    # Remove unreferenced functions/data
-        $<$<CONFIG:Release>:/OPT:ICF>    # Enable COMDAT folding
-        $<$<CONFIG:Release>:/INCREMENTAL:NO> # Disable incremental linking
-        $<$<CONFIG:Release>:/RELEASE>    # Set checksum in PE header
-    )
-    
-    # Explicitly disable debug info generation in Release
-    set_target_properties(${OUTPUT_NAME} PROPERTIES
-        COMPILE_PDB_NAME ""
-        COMPILE_PDB_OUTPUT_DIRECTORY ""
+        $<$<CONFIG:Release>:/LTCG>    # Link-time code generation
+        $<$<CONFIG:Release>:/OPT:REF> # Remove unreferenced functions/data
+        $<$<CONFIG:Release>:/OPT:ICF> # Enable COMDAT folding
     )
     
     # Static linking of MSVC runtime (no external DLL dependencies)
