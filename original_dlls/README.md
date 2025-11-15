@@ -60,7 +60,43 @@ This will:
 3. Generate a header file with MSVC pragma forwarding directives using GLOBALROOT paths
 4. Save it to `../src/exports/winmm.h`
 
-### Step 3: Verify Generated Header
+### Step 3: Verify Exports with objdump (Linux)
+
+If you're on Linux, you can verify the extraction was correct using `objdump`:
+
+```bash
+# View export summary
+objdump -p winmm.dll | grep -A10 "Export"
+
+# This shows:
+# - Ordinal Base: Starting ordinal number (e.g., 1 or 2)
+# - Export Address Table: Total number of exports (hex)
+# - Name Pointer Table: Number of named exports (hex)
+# - Difference = ordinal-only exports (no name)
+```
+
+**Example output for winmm.dll:**
+```
+Ordinal Base                2
+Export Address Table        000000b5  (181 exports)
+[Name Pointer/Ordinal] Table 000000b4  (180 named)
+```
+
+This confirms: 181 total - 180 named = 1 ordinal-only export (ordinal 2)
+
+**View specific exports:**
+```bash
+# Show named exports with ordinals
+objdump -p winmm.dll | sed -n '/\[Ordinal\/Name Pointer\]/,/^$/p' | head -20
+```
+
+**Key things to verify:**
+- ✅ Export count matches what extract_exports.py reported
+- ✅ Ordinal base is correct (DLLs can start at any ordinal, not just 1)
+- ✅ Named exports + ordinal-only exports = total exports
+- ✅ No missing ordinals in the range (gaps are normal)
+
+### Step 4: Verify Generated Header
 
 Check the generated header file:
 
@@ -84,7 +120,7 @@ MAKE_EXPORT(PlaySoundW, 2)
 // ... more exports
 ```
 
-### Step 4: Update CMakeLists.txt
+### Step 5: Update CMakeLists.txt
 
 Add support for your new DLL in `../CMakeLists.txt`:
 
@@ -94,7 +130,7 @@ elseif(DLL_TYPE STREQUAL "winmm")
     set(OUTPUT_NAME "winmm")
 ```
 
-### Step 5: Build and Test
+### Step 6: Build and Test
 
 Build your proxy DLL:
 
@@ -107,7 +143,7 @@ cmake --build . --config Release
 
 Output: `build/Release/winmm.dll`
 
-### Step 6: Test the Proxy
+### Step 7: Test the Proxy
 
 1. Find an application that uses your target DLL
 2. Place your proxy DLL in the application directory
