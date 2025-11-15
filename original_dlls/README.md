@@ -45,7 +45,6 @@ cp /mnt/c/Windows/System32/winmm.dll ./original_dlls/
 
 **Common DLL Locations:**
 - `C:\Windows\System32\` - 64-bit system DLLs
-- `C:\Windows\SysWOW64\` - 32-bit system DLLs (on 64-bit Windows)
 
 ### Step 2: Extract Exports
 
