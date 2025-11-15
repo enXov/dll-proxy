@@ -61,9 +61,18 @@ Output: `build/Release/version.dll` (or `winmm.dll`)
 
 ## Supported DLLs
 
-- `version.dll` (17 exports)
-- `winmm.dll` (181 exports) - The multimedia/audio DLL
-- More coming soon
+| DLL Name | Exports | Common Usage |
+|----------|---------|--------------|
+| `version.dll` | 17 | File version info API |
+| `winmm.dll` | 181 | Multimedia/audio functions - used by media players, games, audio apps |
+
+### Find Which DLLs an Application Loads
+
+Want to know which DLLs your target application uses? Run this PowerShell command:
+
+```powershell
+Get-Process -Name keepassxc | Select-Object -ExpandProperty Modules | Select-Object FileName
+```
 
 ## How It Works
 
