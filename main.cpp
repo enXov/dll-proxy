@@ -16,10 +16,14 @@ DWORD WINAPI Payload(LPVOID lpParam) {
 
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     switch (dwReason) {
-        case DLL_PROCESS_ATTACH:
+        case DLL_PROCESS_ATTACH: {
             DisableThreadLibraryCalls(hModule); // Optimization: We don't need thread attach/detach notifications
-            CreateThread(NULL, 0, Payload, NULL, 0, NULL);
+            HANDLE hThread = CreateThread(NULL, 0, Payload, NULL, 0, NULL);
+            if (hThread != NULL) {
+                CloseHandle(hThread);
+            }
             break;
+        }
         case DLL_PROCESS_DETACH:
             // Cleanup code here (if needed)
             // For simple payloads, no cleanup is usually necessary
