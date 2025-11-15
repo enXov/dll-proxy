@@ -1,9 +1,9 @@
 #include <windows.h>
 
 #if defined(DLL_TYPE_version)
-    #include "exports/version.h"
+    #include "src/exports/version.h"
 #elif defined(DLL_TYPE_winmm)
-    #include "exports/winmm.h"
+    #include "src/exports/winmm.h"
 #else
     #error "DLL_TYPE not defined. Please specify -DDLL_TYPE=<type> in CMake."
 #endif
@@ -27,3 +27,4 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD dwReason, LPVOID lpReserved) {
     }
     return TRUE;
 }
+
