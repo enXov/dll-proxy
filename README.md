@@ -34,11 +34,11 @@ That's it! Build, drop the DLL next to your target application, and your code ru
 
 ```bash
 mkdir build && cd build
-cmake -DDLL_TYPE=version ..  # or winmm
+cmake -DDLL_TYPE=version ..  # or winmm, winhttp, wininet
 cmake --build . --config Release
 ```
 
-Output: `build/Release/version.dll` (or `winmm.dll`)
+Output: `build/Release/version.dll` (or `winmm.dll`, `winhttp.dll`, `wininet.dll`)
 
 ### Linux (GitHub Actions)
 
@@ -88,6 +88,8 @@ WINEDLLOVERRIDES="winmm=n,b;version=n,b" %command%
 |----------|---------|--------------|
 | `version.dll` | 17 | File version info API |
 | `winmm.dll` | 181 | Multimedia/audio functions - used by media players, games, audio apps |
+| `winhttp.dll` | 91 | HTTP client API - used by web applications, updaters |
+| `wininet.dll` | 327 | Internet functions - used by browsers, download managers, networking apps |
 
 ### Find Which DLLs an Application Loads
 
