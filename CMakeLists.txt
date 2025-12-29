@@ -12,7 +12,7 @@ endif()
 
 # DLL_TYPE parameter (user must specify which DLL to build)
 set(DLL_TYPE "version" CACHE STRING "Type of DLL to build (version, winmm, etc)")
-set_property(CACHE DLL_TYPE PROPERTY STRINGS version winmm)
+set_property(CACHE DLL_TYPE PROPERTY STRINGS version winmm winhttp wininet)
 
 # Validate DLL_TYPE and set export header
 if(DLL_TYPE STREQUAL "version")
@@ -23,9 +23,17 @@ elseif(DLL_TYPE STREQUAL "winmm")
     set(EXPORT_HEADER "src/exports/winmm.h")
     set(OUTPUT_NAME "winmm")
     message(STATUS "Building winmm.dll proxy")
+elseif(DLL_TYPE STREQUAL "winhttp")
+    set(EXPORT_HEADER "src/exports/winhttp.h")
+    set(OUTPUT_NAME "winhttp")
+    message(STATUS "Building winhttp.dll proxy")
+elseif(DLL_TYPE STREQUAL "wininet")
+    set(EXPORT_HEADER "src/exports/wininet.h")
+    set(OUTPUT_NAME "wininet")
+    message(STATUS "Building wininet.dll proxy")
 else()
     message(FATAL_ERROR "Invalid DLL_TYPE: ${DLL_TYPE}. "
-                        "Supported types: version, winmm")
+                        "Supported types: version, winmm, winhttp, wininet")
 endif()
 
 # Verify export header exists

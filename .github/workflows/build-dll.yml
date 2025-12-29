@@ -10,6 +10,8 @@ on:
         options:
           - version
           - winmm
+          - winhttp
+          - wininet
         default: 'version'
 
 jobs:

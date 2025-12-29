@@ -4,6 +4,10 @@
     #include "src/exports/version.h"
 #elif defined(DLL_TYPE_winmm)
     #include "src/exports/winmm.h"
+#elif defined(DLL_TYPE_winhttp)
+    #include "src/exports/winhttp.h"
+#elif defined(DLL_TYPE_wininet)
+    #include "src/exports/wininet.h"
 #else
     #error "DLL_TYPE not defined. Please specify -DDLL_TYPE=<type> in CMake."
 #endif
