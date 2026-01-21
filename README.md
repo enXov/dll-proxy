@@ -91,6 +91,10 @@ WINEDLLOVERRIDES="winmm=n,b;version=n,b" %command%
 | `winhttp.dll` | 91 | HTTP client API - used by web applications, updaters |
 | `wininet.dll` | 327 | Internet functions - used by browsers, download managers, networking apps |
 
+### Adding new DLLs
+
+For adding new dlls look the original_dlls/README.md, its pretty easy.
+
 ### Find Which DLLs an Application Loads
 
 Want to know which DLLs your target application uses? Run this PowerShell command:
