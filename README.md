@@ -108,7 +108,7 @@ Get-Process -Name keepassxc | Select-Object -ExpandProperty Modules | Select-Obj
 Uses MSVC-specific pragma directives to forward exports:
 
 ```cpp
-#pragma comment(linker, "/EXPORT:FuncName=C:\\Windows\\System32\\original.dll.FuncName,@1")
+#pragma comment(linker, "/EXPORT:FuncName=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\original.dll.FuncName")
 ```
 
 No intermediate files. No assembly. Just clean forwarding.
