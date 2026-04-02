@@ -7,17 +7,25 @@ This directory contains original Windows DLL files used for export extraction an
 ### Extract Exports from a DLL
 
 ```bash
-# Extract exports from version.dll (with ordinals - recommended)
+# Extract exports from version.dll (linker forwarding header only)
 python extract_exports.py version.dll
 
-# Extract exports from all DLLs in this directory
+# Extract exports WITH runtime forwarding files (.h + .asm)
+python extract_exports.py version.dll --runtime
+
+# Extract all DLLs in this directory
 python extract_exports.py -a
+
+# Extract all DLLs with both linker AND runtime forwarding
+python extract_exports.py -a --runtime
 
 # Extract without ordinals (edge cases only - breaks ordinal-based imports)
 python extract_exports.py version.dll --no-ordinals
 ```
 
-The script will automatically generate a header file in `../src/exports/` ready for use with CMake.
+The script generates files in `../src/exports/`:
+- **Linker mode** (default): `<name>.h` — MSVC pragma forwarding header
+- **Runtime mode** (`--runtime`): Also generates `<name>_runtime.h` + `<name>_runtime.asm`
 
 ## Requirements
 
@@ -51,14 +59,21 @@ cp /mnt/c/Windows/System32/winmm.dll ./original_dlls/
 Run the extraction script on your DLL:
 
 ```bash
+# Linker forwarding header only
 python extract_exports.py winmm.dll
+
+# Linker header + runtime forwarding files
+python extract_exports.py winmm.dll --runtime
 ```
 
 This will:
 1. Parse the DLL and extract all exported functions
 2. Auto-detect export types (regular, COM/PRIVATE, ordinal-only)
-3. Generate a header file with MSVC pragma forwarding directives using GLOBALROOT paths
+3. Generate a linker header with MSVC pragma forwarding directives using GLOBALROOT paths
 4. Save it to `../src/exports/winmm.h`
+5. If `--runtime` is used, also generate:
+   - `../src/exports/winmm_runtime.h` — LoadLibrary + GetProcAddress function pointer resolution
+   - `../src/exports/winmm_runtime.asm` — MASM x64 jump thunks for exported functions
 
 ### Step 3: Verify Exports with objdump (Linux)
 
@@ -122,12 +137,31 @@ MAKE_EXPORT(PlaySoundW, 2)
 
 ### Step 5: Update CMakeLists.txt
 
-Add support for your new DLL in `../CMakeLists.txt`:
+Add support for your new DLL in `../CMakeLists.txt` (include both linker and runtime modes):
 
 ```cmake
 elseif(DLL_TYPE STREQUAL "winmm")
-    set(EXPORT_HEADER "exports/winmm.h")
     set(OUTPUT_NAME "winmm")
+    if(PROXY_METHOD STREQUAL "runtime")
+        set(EXPORT_HEADER "src/exports/winmm_runtime.h")
+        set(ASM_SOURCE "src/exports/winmm_runtime.asm")
+        message(STATUS "Building winmm.dll proxy (RUNTIME forwarding)")
+    else()
+        set(EXPORT_HEADER "src/exports/winmm.h")
+        message(STATUS "Building winmm.dll proxy (LINKER forwarding)")
+    endif()
+```
+
+Also add the includes in `main.cpp`:
+
+```cpp
+#if defined(PROXY_RUNTIME)
+    #elif defined(DLL_TYPE_winmm)
+        #include "src/exports/winmm_runtime.h"
+#else
+    #elif defined(DLL_TYPE_winmm)
+        #include "src/exports/winmm.h"
+#endif
 ```
 
 ### Step 6: Build and Test
@@ -136,9 +170,14 @@ Build your proxy DLL:
 
 ```bash
 cd ..
-mkdir build && cd build
-cmake -DDLL_TYPE=winmm ..
-cmake --build . --config Release
+
+# Linker forwarding (simple, works for most apps)
+cmake -B build -DDLL_TYPE=winmm
+cmake --build build --config Release
+
+# OR: Runtime forwarding (works with everything)
+cmake -B build -DDLL_TYPE=winmm -DPROXY_METHOD=runtime
+cmake --build build --config Release
 ```
 
 Output: `build/Release/winmm.dll`
@@ -209,6 +248,7 @@ Options:
   -q, --quiet           Suppress detailed output
   --list                List all available DLL files
   --no-ordinals         Disable ordinals (not recommended, breaks ordinal-based imports)
+  --runtime             Also generate runtime forwarding files (.h + .asm)
   -h, --help            Show help message
 ```
 
