@@ -88,17 +88,58 @@ execute_process(
         "import sys, importlib.util as u; sys.exit(0 if u.find_spec('pefile') else 1)"
     RESULT_VARIABLE PEFILE_CHECK
 )
+# pefile is required by tools/extract_exports.py. When the interpreter
+# CMake found does not have it, never touch the system/user Python:
+# an isolated venv is created inside the build tree and pefile is
+# installed there. System-wide Python stays untouched, and PEP 668
+# locked distributions (Arch/Artix/Fedora/...) work without any flags.
+set(EXTRACT_PYTHON "${Python3_EXECUTABLE}")
 if(NOT PEFILE_CHECK EQUAL 0)
-    message(STATUS "pefile not found for ${Python3_EXECUTABLE}; installing it with pip...")
-    execute_process(
-        COMMAND "${Python3_EXECUTABLE}" -m pip install pefile
-        RESULT_VARIABLE PEFILE_INSTALL
-    )
-    if(NOT PEFILE_INSTALL EQUAL 0)
-        message(FATAL_ERROR "Failed to install the 'pefile' Python package "
-                            "(required to extract DLL exports from the system files).\n"
-                            "Install it manually with: \"${Python3_EXECUTABLE}\" -m pip install pefile")
+    message(STATUS "pefile not found for ${Python3_EXECUTABLE}; "
+                   "setting up an isolated 'tooling_venv' inside the build tree...")
+    set(TOOLING_VENV "${CMAKE_BINARY_DIR}/tooling_venv")
+    if(CMAKE_HOST_UNIX)
+        set(TOOLING_VENV_PY "${TOOLING_VENV}/bin/python")
+    else()
+        set(TOOLING_VENV_PY "${TOOLING_VENV}/Scripts/python.exe")
     endif()
+    if(NOT EXISTS "${TOOLING_VENV}/pyvenv.cfg")
+        execute_process(
+            COMMAND "${Python3_EXECUTABLE}" -m venv "${TOOLING_VENV}"
+            RESULT_VARIABLE VENV_CREATE
+        )
+        if(NOT VENV_CREATE EQUAL 0)
+            message(FATAL_ERROR "Failed to create the build-time Python venv "
+                                "'${TOOLING_VENV}'.\n"
+                                "Hints:\n"
+                                "  - Debian/Ubuntu require the python3-venv package:\n"
+                                "      sudo apt install python3-venv\n"
+                                "  - Or pass a Python that already has pefile:\n"
+                                "      -DPython3_EXECUTABLE=/path/to/venv/bin/python")
+        endif()
+    endif()
+    # Install pefile into the venv only if it is not there already
+    execute_process(
+        COMMAND "${TOOLING_VENV_PY}" -c
+            "import sys, importlib.util as u; sys.exit(0 if u.find_spec('pefile') else 1)"
+        RESULT_VARIABLE VENV_PEFILE_CHECK
+    )
+    if(NOT VENV_PEFILE_CHECK EQUAL 0)
+        execute_process(
+            COMMAND "${TOOLING_VENV_PY}" -m pip install pefile
+            RESULT_VARIABLE VENV_PIP
+        )
+        if(NOT VENV_PIP EQUAL 0)
+            message(FATAL_ERROR "Failed to install 'pefile' into the build-tree "
+                                "venv '${TOOLING_VENV_PY}'.\n"
+                                "Hints:\n"
+                                "  - Usually a network/proxy issue downloading the wheel.\n"
+                                "  - Run \"${TOOLING_VENV_PY} -m pip install pefile\" "
+                                "manually to see the full error.")
+        endif()
+    endif()
+    set(EXTRACT_PYTHON "${TOOLING_VENV_PY}")
+    message(STATUS "Using isolated build-time Python: ${EXTRACT_PYTHON}")
 endif()
 
 set(EXTRACT_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_exports.py")
@@ -132,16 +173,18 @@ if(IS_MINGW_BUILD AND NOT DLL_SOURCE)
                         "(on Windows MSVC builds it is read from System32 directly).")
 endif()
 execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${GEN_ARGS} -o "${GEN_DIR}"
+    COMMAND "${EXTRACT_PYTHON}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${GEN_ARGS} -o "${GEN_DIR}"
     RESULT_VARIABLE GEN_RESULT
 )
 if(NOT GEN_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to extract exports of '${DLL_FILE_NAME}'.\n"
                         "Hints:\n"
                         "  - Make sure the DLL name is spelled correctly (e.g. 'winmm.dll', not 'winnm.dll').\n"
-                        "  - The DLL must be an x64 file inside System32.\n"
-                        "  - Python needs the 'pefile' package: python -m pip install pefile\n"
-                        "  - Try manually: python tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
+                        "  - The DLL must be an x64 file inside System32 (Windows MSVC hosts)\n"
+                        "    or inside DLL_SOURCE (Linux cross-builds).\n"
+                        "  - CMake installs pefile into an isolated build-tree venv automatically\n"
+                        "    (${EXTRACT_PYTHON}); try it manually to see the full error.\n"
+                        "  - Try manually: ${EXTRACT_PYTHON} tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
 endif()
 
 # Verify the output file exists (paranoia before it enters the build)
