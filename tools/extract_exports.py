@@ -2,8 +2,10 @@
 """
 DLL Export Extractor for dll-proxy
 
-This script extracts function exports from Windows DLL files and generates
-C/C++ header files with export forwarding directives.
+Extracts function exports from a Windows DLL and generates C/C++ header files
+with export forwarding directives. By default, the source DLL is pulled
+directly from the **local Windows system files** (System32) - the exact same
+location the proxy forwards to at runtime (GLOBALROOT\\SystemRoot\\System32).
 
 Supports TWO forwarding methods:
   - Linker forwarding (default): MSVC pragma directives (simple, fast)
@@ -11,17 +13,17 @@ Supports TWO forwarding methods:
     Required for complex applications and game engines.
 
 Usage:
-    python extract_exports.py <dll_filename>
-    python extract_exports.py <dll_filename> --runtime
-    python extract_exports.py -a  # Extract all DLLs in directory
-    python extract_exports.py -a --runtime  # Generate both linker AND runtime
+    python extract_exports.py winmm.dll      # from the system files (System32)
+    python extract_exports.py <path>/to/dll  # from an explicit DLL file
+    python extract_exports.py winmm.dll --runtime  # also generate runtime files
 
 Requirements:
     - pefile (pip install pefile)
-    - Windows DLL file in the same directory
+    - Run on Windows for system file sourcing (any OS works with explicit paths)
 """
 
 import os
+import re
 import sys
 import argparse
 from pathlib import Path
@@ -51,6 +53,15 @@ def extract_exports(dll_path):
     try:
         pe = pefile.PE(dll_path)
         
+        # Reject non-x64 DLLs early (project is x64-only). This also catches
+        # 32-bit-Python-on-x64-Windows cases where System32 resolves to
+        # SysWOW64 through WOW64 file-system redirection.
+        machine = pe.FILE_HEADER.Machine
+        if machine != 0x8664:  # IMAGE_FILE_MACHINE_AMD64
+            print(f"Error: '{dll_path}' is not an x64 (AMD64) DLL "
+                  f"(machine type 0x{machine:04x})! This project targets x64 only.")
+            return None
+        
         if not hasattr(pe, 'DIRECTORY_ENTRY_EXPORT'):
             print(f"Error: '{dll_path}' has no export directory!")
             return None
@@ -78,6 +89,62 @@ def extract_exports(dll_path):
     except Exception as e:
         print(f"Error processing '{dll_path}': {e}")
         return None
+
+
+def resolve_dll_source(arg):
+    """
+    Resolve the user's DLL input to an actual file path.
+
+    Accepts:
+      1. An existing file path (absolute or relative) - used as-is.
+      2. A system DLL file name ("winmm.dll") - resolved against the local
+         Windows system files via GLOBALROOT\\SystemRoot, the same location
+         the proxy forwards to at runtime.
+
+    Returns a Path, or None on failure (with the reason printed).
+    """
+    # 1. As given (CWD-relative or absolute)
+    candidate = Path(arg)
+    if candidate.is_file():
+        return candidate
+
+    # 2. Next to the script (convenient for manual runs with local copies)
+    script_local = Path(__file__).parent / arg
+    if script_local.is_file():
+        return script_local
+
+    # 3. Windows system files (via the NT path). GLOBALROOT\SystemRoot
+    #    resolves regardless of the installation drive (C:, D:, ...) and
+    #    matches the path used by linker-method export forwarding.
+    name = os.path.basename(str(arg).replace('\\', '/')).lower()
+    if not name.endswith('.dll'):
+        print(f"Error: '{name}' does not end with '.dll'. "
+              "Pass the system DLL file name, e.g. 'winmm.dll'.")
+        return None
+    stem = name[:-len('.dll')]
+    if not re.fullmatch(r'[A-Za-z0-9_]+', stem):
+        print(f"Error: '{name}' is an invalid DLL file name "
+              "(letters, digits, underscore only).")
+        return None
+
+    system_root = os.environ.get('SystemRoot', r'C:\Windows')
+    system_path = Path(r'\\.\GLOBALROOT\SystemRoot\System32') / name
+    if system_path.is_file():
+        return system_path
+
+    # Safety net: plain Win32 path (e.g. C:\Windows\System32\name.dll)
+    win32_path = Path(system_root) / 'System32' / name
+    if win32_path.is_file():
+        return win32_path
+
+    print(f"Error: Could not resolve '{arg}' to a DLL file.")
+    print("Tried:")
+    print(f"  - {candidate}          (as given)")
+    print(f"  - {script_local}  (next to the script)")
+    print(f"  - {system_path}  (Windows system files)")
+    print("\nNote: system file sourcing requires running on Windows "
+          "(GitHub Actions or a local Windows machine).")
+    return None
 
 
 def generate_header(dll_name, exports, use_ordinals=True):
@@ -433,14 +500,14 @@ def save_header(dll_name, header_content, output_dir=None):
     Args:
         dll_name: Name of the DLL (e.g., "version.dll")
         header_content: Generated header content
-        output_dir: Directory to save header (default: ../src/exports/)
+        output_dir: Directory to save header (default: ./exports/)
     
     Returns:
         Path to saved file
     """
     if output_dir is None:
-        # Default to src/exports/ directory (one level up)
-        output_dir = Path(__file__).parent.parent / "src" / "exports"
+        # Default to ./exports relative to the current directory
+        output_dir = Path("exports")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -462,13 +529,13 @@ def save_runtime_files(dll_name, header_content, asm_content, output_dir=None):
         dll_name: Name of the DLL (e.g., "version.dll")
         header_content: Generated runtime header content
         asm_content: Generated ASM thunk content
-        output_dir: Directory to save files (default: ../src/exports/)
+        output_dir: Directory to save files (default: ./exports/)
     
     Returns:
         Tuple of (header_path, asm_path)
     """
     if output_dir is None:
-        output_dir = Path(__file__).parent.parent / "src" / "exports"
+        output_dir = Path("exports")
     
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -506,12 +573,13 @@ def print_export_summary(dll_name, exports):
     print(f"{'='*60}\n")
 
 
-def process_dll(dll_filename, output_dir=None, verbose=True, use_ordinals=True, runtime=False):
+def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runtime=False):
     """
-    Process a single DLL file: extract exports and generate header(s).
+    Process a single DLL: extract exports and generate header(s).
     
     Args:
-        dll_filename: Name of DLL file to process
+        dll_arg: DLL input - an existing file path, or a bare system DLL
+                 name ("winmm" or "winmm.dll") resolved from System32
         output_dir: Custom output directory for header
         verbose: Print detailed information
         use_ordinals: Include ordinals in exports (default: True)
@@ -520,11 +588,15 @@ def process_dll(dll_filename, output_dir=None, verbose=True, use_ordinals=True, 
     Returns:
         True if successful, False otherwise
     """
-    dll_path = Path(__file__).parent / dll_filename
+    dll_path = resolve_dll_source(dll_arg)
+    if dll_path is None:
+        return False
+    
+    dll_name = dll_path.name.lower()
     
     if verbose:
-        print(f"Processing: {dll_filename}")
-        print(f"Path: {dll_path}")
+        print(f"Processing: {dll_path}")
+        print(f"Proxy target at runtime: \\\\.\\GLOBALROOT\\SystemRoot\\System32\\{dll_name}")
     
     # Extract exports
     exports = extract_exports(dll_path)
@@ -532,26 +604,26 @@ def process_dll(dll_filename, output_dir=None, verbose=True, use_ordinals=True, 
         return False
     
     if len(exports) == 0:
-        print(f"Warning: No exports found in '{dll_filename}'")
+        print(f"Warning: No exports found in '{dll_name}'")
         return False
     
     # Print summary
     if verbose:
-        print_export_summary(dll_filename, exports)
+        print_export_summary(dll_name, exports)
     
     # Generate linker forwarding header (always)
-    header_content = generate_header(dll_filename, exports, use_ordinals)
-    header_path = save_header(dll_filename, header_content, output_dir)
+    header_content = generate_header(dll_name, exports, use_ordinals)
+    header_path = save_header(dll_name, header_content, output_dir)
     
     if verbose:
         print(f"✓ Linker header generated: {header_path}")
     
     # Generate runtime forwarding files (if requested)
     if runtime:
-        rt_header = generate_runtime_header(dll_filename, exports)
-        rt_asm = generate_runtime_asm(dll_filename, exports)
+        rt_header = generate_runtime_header(dll_name, exports)
+        rt_asm = generate_runtime_asm(dll_name, exports)
         rt_header_path, rt_asm_path = save_runtime_files(
-            dll_filename, rt_header, rt_asm, output_dir
+            dll_name, rt_header, rt_asm, output_dir
         )
         
         if verbose:
@@ -560,71 +632,32 @@ def process_dll(dll_filename, output_dir=None, verbose=True, use_ordinals=True, 
     
     if verbose:
         method_info = " (linker + runtime)" if runtime else ""
-        print(f"✓ Ready to use in CMake with -DDLL_TYPE={dll_filename.replace('.dll', '')}{method_info}\n")
+        print(f"✓ Ready to use in CMake with -DDLL_TYPE={dll_name.replace('.dll', '')}{method_info}\n")
     
     return True
 
 
-def process_all_dlls(output_dir=None, use_ordinals=True, runtime=False):
-    """
-    Process all DLL files in the original_dlls directory.
-    
-    Args:
-        output_dir: Custom output directory for headers
-        use_ordinals: Include ordinals in exports (default: True)
-        runtime: Also generate runtime forwarding files (default: False)
-    
-    Returns:
-        Number of successfully processed DLLs
-    """
-    dll_dir = Path(__file__).parent
-    dll_files = list(dll_dir.glob("*.dll"))
-    
-    if not dll_files:
-        print("No DLL files found in current directory!")
-        return 0
-    
-    print(f"Found {len(dll_files)} DLL file(s)")
-    if runtime:
-        print("Mode: Generating BOTH linker AND runtime forwarding files")
-    print("="*60)
-    
-    success_count = 0
-    for dll_file in dll_files:
-        if process_dll(dll_file.name, output_dir, verbose=True, 
-                      use_ordinals=use_ordinals, runtime=runtime):
-            success_count += 1
-    
-    print(f"\n{'='*60}")
-    print(f"Summary: {success_count}/{len(dll_files)} DLL(s) processed successfully")
-    print(f"{'='*60}\n")
-    
-    return success_count
-
-
 def main():
     parser = argparse.ArgumentParser(
-        description='Extract DLL exports and generate forwarding headers',
+        description='Extract DLL exports and generate forwarding headers '
+                    '(source defaults to the local Windows system files)',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate linker forwarding header (default)
-  python extract_exports.py version.dll
-  
-  # Generate BOTH linker AND runtime forwarding files
-  python extract_exports.py version.dll --runtime
-  
-  # Generate all DLLs with runtime support
-  python extract_exports.py -a --runtime
-  
-  # Extract with custom output directory
-  python extract_exports.py version.dll -o /path/to/output
-  
-  # Quiet mode (less output)
-  python extract_exports.py version.dll -q
+  # Generate linker forwarding header from the system files
+  python extract_exports.py winmm.dll
 
-Build with runtime forwarding (for complex applications):
-  cmake -B build -DDLL_TYPE=winmm -DPROXY_METHOD=runtime
+  # Same, but also generate runtime forwarding files (.h + .asm)
+  python extract_exports.py winmm.dll --runtime
+
+  # Generate from an explicit DLL file (any location)
+  python extract_exports.py X:\\copy\\of\\version.dll --runtime
+
+  # Custom output directory
+  python extract_exports.py winmm.dll -o /path/to/output
+
+Usage from CMake (generation runs automatically at configure time):
+  cmake -B build -DDLL_TYPE=winmm.dll -DPROXY_METHOD=runtime
   cmake --build build --config Release
 """
     )
@@ -632,31 +665,19 @@ Build with runtime forwarding (for complex applications):
     parser.add_argument(
         'dll_file',
         nargs='?',
-        help='DLL filename to process (e.g., version.dll)'
-    )
-    
-    parser.add_argument(
-        '-a', '--all',
-        action='store_true',
-        help='Process all DLL files in directory'
+        help='System DLL file name (e.g. winmm.dll -> system files) or an explicit DLL file path'
     )
     
     parser.add_argument(
         '-o', '--output',
         metavar='DIR',
-        help='Output directory for generated headers (default: ../src/exports/)'
+        help='Output directory for generated headers (default: ./exports/)'
     )
     
     parser.add_argument(
         '-q', '--quiet',
         action='store_true',
         help='Suppress detailed output'
-    )
-    
-    parser.add_argument(
-        '--list',
-        action='store_true',
-        help='List all available DLL files in directory'
     )
     
     parser.add_argument(
@@ -673,25 +694,8 @@ Build with runtime forwarding (for complex applications):
     
     args = parser.parse_args()
     
-    # List available DLLs
-    if args.list:
-        dll_dir = Path(__file__).parent
-        dll_files = list(dll_dir.glob("*.dll"))
-        if dll_files:
-            print("Available DLL files:")
-            for dll_file in dll_files:
-                print(f"  - {dll_file.name}")
-        else:
-            print("No DLL files found in directory.")
-        return 0
-    
     # Determine ordinal usage
     use_ordinals = not args.no_ordinals
-    
-    # Process all DLLs
-    if args.all:
-        success = process_all_dlls(args.output, use_ordinals, runtime=args.runtime)
-        return 0 if success > 0 else 1
     
     # Process single DLL
     if args.dll_file:

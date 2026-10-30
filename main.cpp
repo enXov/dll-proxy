@@ -2,35 +2,22 @@
 
 // ============================================================
 // Export forwarding: choose between linker and runtime methods
+//
+// The forwarding headers are generated at CMake configure time 
+// by tools/extract_exports.py, which extracts the exports
+// of the requested system DLL (see DLL_TYPE) directly from the local
+// Windows system files. The generated headers are published under fixed
+// names in the build tree ("exports/proxy_exports*.h"), so this file
+// never needs changes when a new DLL type is used.
 // ============================================================
-#if defined(PROXY_RUNTIME)
+#ifdef PROXY_RUNTIME
     // Runtime forwarding: LoadLibrary + GetProcAddress + ASM thunks
     // Compatible with ALL applications including complex game engines
-    #if defined(DLL_TYPE_version)
-        #include "src/exports/version_runtime.h"
-    #elif defined(DLL_TYPE_winmm)
-        #include "src/exports/winmm_runtime.h"
-    #elif defined(DLL_TYPE_winhttp)
-        #include "src/exports/winhttp_runtime.h"
-    #elif defined(DLL_TYPE_wininet)
-        #include "src/exports/wininet_runtime.h"
-    #else
-        #error "DLL_TYPE not defined. Please specify -DDLL_TYPE=<type> in CMake."
-    #endif
+    #include "exports/proxy_exports_runtime.h"
 #else
     // Linker forwarding: MSVC pragma directives (default)
     // Simple and clean, works for most applications
-    #if defined(DLL_TYPE_version)
-        #include "src/exports/version.h"
-    #elif defined(DLL_TYPE_winmm)
-        #include "src/exports/winmm.h"
-    #elif defined(DLL_TYPE_winhttp)
-        #include "src/exports/winhttp.h"
-    #elif defined(DLL_TYPE_wininet)
-        #include "src/exports/wininet.h"
-    #else
-        #error "DLL_TYPE not defined. Please specify -DDLL_TYPE=<type> in CMake."
-    #endif
+    #include "exports/proxy_exports.h"
 #endif
 
 // Payload function - your custom code goes here

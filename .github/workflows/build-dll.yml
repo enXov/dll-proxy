@@ -4,15 +4,10 @@ on:
   workflow_dispatch:
     inputs:
       dll_type:
-        description: 'DLL Type to build'
+        description: 'System DLL file name to proxy (e.g. version.dll, winmm.dll)'
         required: true
-        type: choice
-        options:
-          - version
-          - winmm
-          - winhttp
-          - wininet
-        default: 'version'
+        type: string
+        default: 'version.dll'
       proxy_method:
         description: 'Export forwarding method'
         required: true
@@ -30,15 +25,18 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
       
-      - name: Configure CMake
-        run: cmake -B build -DDLL_TYPE=${{ github.event.inputs.dll_type }} -DPROXY_METHOD=${{ github.event.inputs.proxy_method }}
+      - name: Install pefile
+        run: python -m pip install pefile
+      
+      - name: Configure CMake (extracts exports from system files)
+        run: cmake -B build -DDLL_TYPE=${{ inputs.dll_type }} -DPROXY_METHOD=${{ inputs.proxy_method }}
       
       - name: Build DLL (Release)
         run: cmake --build build --config Release
       
-      - name: Upload Artifact
+      - name: Upload Artifact (proxy DLL)
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.dll_type }}-${{ github.event.inputs.proxy_method }}.dll
-          path: build/Release/${{ github.event.inputs.dll_type }}.dll
+          name: ${{ inputs.dll_type }}-${{ inputs.proxy_method }}
+          path: build/Release/*.dll
           if-no-files-found: error

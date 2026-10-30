@@ -10,9 +10,10 @@ if(NOT MSVC)
                         "For Linux users: Use GitHub Actions to build with MSVC in the cloud.")
 endif()
 
-# DLL_TYPE parameter (user must specify which DLL to build)
-set(DLL_TYPE "version" CACHE STRING "Type of DLL to build (version, winmm, etc)")
-set_property(CACHE DLL_TYPE PROPERTY STRINGS version winmm winhttp wininet)
+# DLL_TYPE parameter: the file name of ANY x64 system DLL to proxy.
+# Pass the DLL file name (e.g. "winmm.dll"); exports are extracted from the
+# local Windows system files at configure time.
+set(DLL_TYPE "version.dll" CACHE STRING "System DLL file name to proxy (e.g. version.dll, winmm.dll)")
 
 # PROXY_METHOD parameter: linker (default) or runtime
 # - linker: Uses MSVC pragma export forwarding (simple, works for most apps)
@@ -31,97 +32,98 @@ if(PROXY_METHOD STREQUAL "runtime")
     enable_language(ASM_MASM)
 endif()
 
-# Validate DLL_TYPE and set export header + ASM sources
-if(DLL_TYPE STREQUAL "version")
-    set(OUTPUT_NAME "version")
-    if(PROXY_METHOD STREQUAL "runtime")
-        set(EXPORT_HEADER "src/exports/version_runtime.h")
-        set(ASM_SOURCE "src/exports/version_runtime.asm")
-        message(STATUS "Building version.dll proxy (RUNTIME forwarding)")
-    else()
-        set(EXPORT_HEADER "src/exports/version.h")
-        message(STATUS "Building version.dll proxy (LINKER forwarding)")
-    endif()
-elseif(DLL_TYPE STREQUAL "winmm")
-    set(OUTPUT_NAME "winmm")
-    if(PROXY_METHOD STREQUAL "runtime")
-        set(EXPORT_HEADER "src/exports/winmm_runtime.h")
-        set(ASM_SOURCE "src/exports/winmm_runtime.asm")
-        message(STATUS "Building winmm.dll proxy (RUNTIME forwarding)")
-    else()
-        set(EXPORT_HEADER "src/exports/winmm.h")
-        message(STATUS "Building winmm.dll proxy (LINKER forwarding)")
-    endif()
-elseif(DLL_TYPE STREQUAL "winhttp")
-    set(OUTPUT_NAME "winhttp")
-    if(PROXY_METHOD STREQUAL "runtime")
-        set(EXPORT_HEADER "src/exports/winhttp_runtime.h")
-        set(ASM_SOURCE "src/exports/winhttp_runtime.asm")
-        message(STATUS "Building winhttp.dll proxy (RUNTIME forwarding)")
-    else()
-        set(EXPORT_HEADER "src/exports/winhttp.h")
-        message(STATUS "Building winhttp.dll proxy (LINKER forwarding)")
-    endif()
-elseif(DLL_TYPE STREQUAL "wininet")
-    set(OUTPUT_NAME "wininet")
-    if(PROXY_METHOD STREQUAL "runtime")
-        set(EXPORT_HEADER "src/exports/wininet_runtime.h")
-        set(ASM_SOURCE "src/exports/wininet_runtime.asm")
-        message(STATUS "Building wininet.dll proxy (RUNTIME forwarding)")
-    else()
-        set(EXPORT_HEADER "src/exports/wininet.h")
-        message(STATUS "Building wininet.dll proxy (LINKER forwarding)")
-    endif()
-else()
-    message(FATAL_ERROR "Invalid DLL_TYPE: ${DLL_TYPE}. "
-                        "Supported types: version, winmm, winhttp, wininet")
+# Note: Windows' own files are located via GLOBALROOT\SystemRoot, which
+# resolves regardless of the installation drive - the same path the proxy
+# then forwards to at runtime.
+
+# Normalize DLL_TYPE: reject paths first, then strip the ".dll" suffix
+get_filename_component(DLL_NODIR "${DLL_TYPE}" NAME)
+if(NOT DLL_NODIR STREQUAL "${DLL_TYPE}")
+    message(FATAL_ERROR "Invalid DLL_TYPE: '${DLL_TYPE}'. "
+                        "Pass just the DLL file name (e.g. 'winmm.dll'), not a path.")
 endif()
 
-# Verify export header exists
-if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${EXPORT_HEADER}")
-    message(FATAL_ERROR "Export header not found: ${EXPORT_HEADER}\n"
-                        "Please ensure the export header exists for DLL type: ${DLL_TYPE}")
-endif()
+get_filename_component(DLL_NAME "${DLL_TYPE}" NAME_WLE)
+get_filename_component(DLL_EXT "${DLL_TYPE}" LAST_EXT)
+string(TOLOWER "${DLL_EXT}" DLL_EXT)
 
-# Verify ASM source exists for runtime mode
+# Validate the DLL name (target file name + generated headers use it)
+if(NOT DLL_NAME MATCHES "^[A-Za-z0-9_]+$" OR NOT DLL_EXT STREQUAL ".dll")
+    message(FATAL_ERROR "Invalid DLL_TYPE: '${DLL_TYPE}'. "
+                        "Pass just the DLL file name, e.g. 'winmm.dll' "
+                        "(letters, digits and underscores).")
+endif()
+set(DLL_FILE_NAME "${DLL_NAME}.dll")
+
+# Python is required for the build-time export extraction
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+
+set(EXTRACT_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_exports.py")
+set(GEN_DIR "${CMAKE_BINARY_DIR}/exports")
+set(GEN_HEADER "${GEN_DIR}/proxy_exports.h")
+set(GEN_HEADER_RUNTIME "${GEN_DIR}/proxy_exports_runtime.h")
+
+# Generate the export forwarding files from the local system DLL
+# (always verbose so CI logs show the extracted export list)
+file(MAKE_DIRECTORY "${GEN_DIR}")
+set(GEN_ARGS "")
 if(PROXY_METHOD STREQUAL "runtime")
-    if(NOT EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${ASM_SOURCE}")
-        message(FATAL_ERROR "ASM thunks not found: ${ASM_SOURCE}\n"
-                            "Generate runtime files with: python extract_exports.py ${DLL_TYPE}.dll --runtime")
+    list(APPEND GEN_ARGS --runtime)
+endif()
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" "${EXTRACT_SCRIPT}" "${DLL_FILE_NAME}" ${GEN_ARGS} -o "${GEN_DIR}"
+    RESULT_VARIABLE GEN_RESULT
+)
+if(NOT GEN_RESULT EQUAL 0)
+    message(FATAL_ERROR "Failed to extract exports of '${DLL_FILE_NAME}' from your system files.\n"
+                        "Hints:\n"
+                        "  - Make sure the DLL name is spelled correctly (e.g. 'winmm.dll', not 'winnm.dll').\n"
+                        "  - The DLL must be an x64 file inside System32.\n"
+                        "  - Python needs the 'pefile' package: python -m pip install pefile\n"
+                        "  - Try manually: python tools/extract_exports.py ${DLL_FILE_NAME}")
+endif()
+
+# Verify the output files exist (paranoia before they enter the build)
+if(NOT EXISTS "${GEN_DIR}/${DLL_NAME}.h")
+    message(FATAL_ERROR "Export generation did not produce '${GEN_DIR}/${DLL_NAME}.h'")
+endif()
+
+# Publish generated files under fixed include names so main.cpp needs no
+# per-DLL branching; this is what makes DLL_TYPE fully dynamic.
+configure_file("${GEN_DIR}/${DLL_NAME}.h" "${GEN_HEADER}" COPYONLY)
+
+# Verify ASM source exists for runtime mode and copy its header under fixed name
+set(PROXY_SOURCES main.cpp)
+if(PROXY_METHOD STREQUAL "runtime")
+    set(ASM_SOURCE "${GEN_DIR}/${DLL_NAME}_runtime.asm")
+    if(NOT EXISTS "${ASM_SOURCE}")
+        message(FATAL_ERROR "Runtime generation did not produce '${ASM_SOURCE}'")
     endif()
+    configure_file("${GEN_DIR}/${DLL_NAME}_runtime.h" "${GEN_HEADER_RUNTIME}" COPYONLY)
+    list(APPEND PROXY_SOURCES "${ASM_SOURCE}")
 endif()
 
 # Create shared library (DLL)
-# For runtime mode, include the ASM thunk source
-if(PROXY_METHOD STREQUAL "runtime")
-    add_library(${OUTPUT_NAME} SHARED main.cpp ${ASM_SOURCE})
-else()
-    add_library(${OUTPUT_NAME} SHARED main.cpp)
-endif()
+add_library(${DLL_NAME} SHARED ${PROXY_SOURCES})
 
-# Set output name to match DLL type
-set_target_properties(${OUTPUT_NAME} PROPERTIES
-    OUTPUT_NAME ${OUTPUT_NAME}
+# Set output name to match the DLL type
+set_target_properties(${DLL_NAME} PROPERTIES
+    OUTPUT_NAME ${DLL_NAME}
     SUFFIX ".dll"
     PREFIX ""
 )
 
-# Add compile definitions (DLL_TYPE_<type> for conditional compilation)
-target_compile_definitions(${OUTPUT_NAME} PRIVATE
-    DLL_TYPE_${DLL_TYPE}
-)
+# Set C++ standard
+target_compile_features(${DLL_NAME} PRIVATE cxx_std_17)
 
 # Add PROXY_RUNTIME definition for runtime forwarding mode
 if(PROXY_METHOD STREQUAL "runtime")
-    target_compile_definitions(${OUTPUT_NAME} PRIVATE PROXY_RUNTIME)
+    target_compile_definitions(${DLL_NAME} PRIVATE PROXY_RUNTIME)
 endif()
-
-# Set C++ standard
-target_compile_features(${OUTPUT_NAME} PRIVATE cxx_std_17)
 
 # MSVC-specific compiler flags (scoped to C++ only, not MASM)
 if(MSVC)
-    target_compile_options(${OUTPUT_NAME} PRIVATE
+    target_compile_options(${DLL_NAME} PRIVATE
         $<$<COMPILE_LANGUAGE:CXX>:/W4>              # Warning level 4
         $<$<COMPILE_LANGUAGE:CXX>:/WX->             # Don't treat warnings as errors
         $<$<COMPILE_LANGUAGE:CXX>:/permissive->     # Standards conformance mode
@@ -129,37 +131,40 @@ if(MSVC)
     )
     
     # Release optimizations (C++ only)
-    target_compile_options(${OUTPUT_NAME} PRIVATE
+    target_compile_options(${DLL_NAME} PRIVATE
         $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/O2>      # Maximum optimization
         $<$<AND:$<CONFIG:Release>,$<COMPILE_LANGUAGE:CXX>>:/GL>      # Whole program optimization
     )
     
     # Release linker optimizations
-    target_link_options(${OUTPUT_NAME} PRIVATE
+    target_link_options(${DLL_NAME} PRIVATE
         $<$<CONFIG:Release>:/LTCG>    # Link-time code generation
         $<$<CONFIG:Release>:/OPT:REF> # Remove unreferenced functions/data
         $<$<CONFIG:Release>:/OPT:ICF> # Enable COMDAT folding
     )
     
     # Static linking of MSVC runtime (no external DLL dependencies)
-    set_property(TARGET ${OUTPUT_NAME} PROPERTY
+    set_property(TARGET ${DLL_NAME} PROPERTY
         MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
 endif()
 
-# Include directories (for export headers)
-target_include_directories(${OUTPUT_NAME} PRIVATE
+# Include directories:
+# - project root for main.cpp
+# - build tree for generated exports ("exports/proxy_exports*.h")
+target_include_directories(${DLL_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_BINARY_DIR}
 )
 
 # Print build information
 message(STATUS "")
 message(STATUS "===== dll-proxy Build Configuration =====")
-message(STATUS "DLL Type:        ${DLL_TYPE}")
+message(STATUS "DLL Type:        ${DLL_NAME} (proxying System32\\${DLL_FILE_NAME})")
 message(STATUS "Proxy Method:    ${PROXY_METHOD}")
-message(STATUS "Output Name:     ${OUTPUT_NAME}.dll")
-message(STATUS "Export Header:   ${EXPORT_HEADER}")
+message(STATUS "Output Name:     ${DLL_NAME}.dll")
+message(STATUS "Generated Exports: exports/proxy_exports.h (from local system files)")
 if(PROXY_METHOD STREQUAL "runtime")
-    message(STATUS "ASM Thunks:      ${ASM_SOURCE}")
+    message(STATUS "ASM Thunks:      exports/${DLL_NAME}_runtime.asm")
 endif()
 message(STATUS "Compiler:        ${CMAKE_CXX_COMPILER_ID}")
 message(STATUS "Build Type:      ${CMAKE_BUILD_TYPE}")
