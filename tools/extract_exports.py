@@ -106,16 +106,18 @@ def resolve_dll_source(arg):
     # 1. As given (CWD-relative or absolute)
     candidate = Path(arg)
     if candidate.is_file():
-        return candidate
+        return str(candidate)
 
     # 2. Next to the script (convenient for manual runs with local copies)
     script_local = Path(__file__).parent / arg
     if script_local.is_file():
-        return script_local
+        return str(script_local)
 
     # 3. Windows system files (via the NT path). GLOBALROOT\SystemRoot
     #    resolves regardless of the installation drive (C:, D:, ...) and
     #    matches the path used by linker-method export forwarding.
+    #    NOTE: built as plain strings; pathlib mangles device prefixes
+    #    like \\.\GLOBALROOT (drops the SystemRoot component).
     name = os.path.basename(str(arg).replace('\\', '/')).lower()
     if not name.endswith('.dll'):
         print(f"Error: '{name}' does not end with '.dll'. "
@@ -128,13 +130,13 @@ def resolve_dll_source(arg):
         return None
 
     system_root = os.environ.get('SystemRoot', r'C:\Windows')
-    system_path = Path(r'\\.\GLOBALROOT\SystemRoot\System32') / name
-    if system_path.is_file():
+    system_path = (r'\\.\GLOBALROOT\SystemRoot\System32' + '\\' + name)
+    if os.path.isfile(system_path):
         return system_path
 
     # Safety net: plain Win32 path (e.g. C:\Windows\System32\name.dll)
-    win32_path = Path(system_root) / 'System32' / name
-    if win32_path.is_file():
+    win32_path = os.path.join(system_root, 'System32', name)
+    if os.path.isfile(win32_path):
         return win32_path
 
     print(f"Error: Could not resolve '{arg}' to a DLL file.")
@@ -592,7 +594,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
     if dll_path is None:
         return False
     
-    dll_name = dll_path.name.lower()
+    dll_name = os.path.basename(str(dll_path)).lower()
     
     if verbose:
         print(f"Processing: {dll_path}")
