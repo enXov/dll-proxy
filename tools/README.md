@@ -39,8 +39,12 @@ python tools/extract_exports.py winmm.dll
 # Also generate runtime forwarding files (.h + .asm)
 python tools/extract_exports.py winmm.dll --runtime
 
+# Generate a GNU ld .def file for MinGW-w64 cross builds (instead of the
+# MSVC pragma header). Same GLOBALROOT path, same forwarders.
+python tools/extract_exports.py winmm.dll --def
+
 # From an explicit DLL file (any location - works on any OS)
-python tools/extract_exports.py X:\copy\of\version.dll --runtime
+python tools/extract_exports.py X:\copy\of\version.dll --def
 ```
 
 This prints the export summary and writes the generated files to the
@@ -58,7 +62,9 @@ Arguments:
 Options:
   -o, --output DIR      Output directory for generated files
   -q, --quiet           Suppress detailed output
-  --runtime             Also generate runtime forwarding files (.h + .asm)
+  --runtime             Also generate runtime forwarding files
+                        (.h + .asm for MSVC, .h + .def when paired with --def)
+  --def                 Generate GNU ld .def output (MinGW-w64)
   --no-ordinals         Disable ordinals (breaks ordinal-based imports)
   -h, --help            Show help message
 ```
@@ -67,11 +73,15 @@ Options:
 
 The script generates files named after the DLL itself (e.g. `winmm`):
 - `winmm.h` - linker forwarding header (MSVC pragma forwarding via GLOBALROOT path)
+- `winmm.def` - GNU ld forwarding file (MinGW-w64 linker method, generated with `--def`)
 - `winmm_runtime.h` - LoadLibrary + GetProcAddress function pointer resolution
-- `winmm_runtime.asm` - MASM x64 jump thunks for every exported function
+- `winmm_runtime.asm` - MASM x64 thunks (MSVC runtime builds)
+- `winmm_runtime.def` - GNU ld thunk export mapping (MinGW-w64 runtime builds,
+  generated with `--def --runtime`; the runtime header then contains native GNU
+  thunks instead of being MASM-dependent)
 
-Only the linker header is needed for `-DPROXY_METHOD=linker` (default);
-all three are generated for `-DPROXY_METHOD=runtime`.
+With `--def --runtime` together, MinGW-w64 runtime builds get exactly the
+runtime header + runtime def pair; no MSVC-only files are generated.
 
 ## Notes
 

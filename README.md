@@ -36,7 +36,10 @@ This project supports two export forwarding architectures:
 
 ### Linker Forwarding (default)
 
-Uses MSVC-specific `#pragma comment(linker, ...)` directives to set up PE-level export forwarding. The Windows loader resolves these at load time - no runtime code needed.
+Uses PE-level export forwarding to `\\.\GLOBALROOT\SystemRoot\System32\<dll>.<Func>` - the Windows loader resolves these at load time, no runtime code needed.
+
+- **MSVC**: `#pragma comment(linker, "/EXPORT:...")` directives
+- **MinGW-w64**: the same forwarders through a generated `.def` file passed to GNU ld
 
 ```cpp
 #pragma comment(linker, "/EXPORT:FuncName=\\\\.\\GLOBALROOT\\SystemRoot\\System32\\original.dll.FuncName,@1")
@@ -44,7 +47,7 @@ Uses MSVC-specific `#pragma comment(linker, ...)` directives to set up PE-level 
 
 ### Runtime Forwarding
 
-Uses `LoadLibrary` + `GetProcAddress` to manually resolve the original DLL at startup, with MASM x64 jump thunks providing the actual exported functions.
+Uses `LoadLibrary` + `GetProcAddress` to manually resolve the original DLL at startup, with x64 jump thunks providing the actual exported functions (MASM for MSVC builds, naked GNU stubs for MinGW-w64 builds).
 
 ```
 ┌─────────────┐      ┌──────────────────┐      ┌─────────────────┐
@@ -64,7 +67,7 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
 
 ## Requirements
 
-- **Compiler**: MSVC (Visual Studio 2019+)
+- **Compiler**: MSVC (Windows / GitHub Actions) or **MinGW-w64** (Linux cross-build, both methods)
 - **Build**: CMake 3.15+
 - **Python**: 3.8+ with `pefile` (local builds only, the GitHub Actions workflow installs it automatically)
 - **Target**: Windows x64 only (no 32-bit support)
@@ -82,6 +85,29 @@ cmake --build build --config Release
 ```
 
 Output: `build/Release/<dll_type>.dll`
+
+### Linux (MinGW-w64 Cross-Build, no Windows needed)
+
+Build directly on your machine with the cross toolchain:
+
+```bash
+sudo pacman -S mingw-w64-gcc          # Arch (pulls binutils + CRT + headers)
+
+# Linker forwarding - exports go through a generated .def file (GNU ld)
+cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DDLL_TYPE=version.dll \
+      -DDLL_SOURCE=/path/to/real/version.dll      # an x64 copy of the system DLL
+cmake --build build
+```
+
+- `DLL_TYPE` is the proxy name/target; `DLL_SOURCE` is any local copy of that
+  system DLL the exports are extracted from (Linux hosts cannot read the
+  Windows system files directly - use e.g. a Wine prefix copy,
+  `~/.wine/drive_c/windows/system32/version.dll`, an ISO, or a symbol-server
+  download).
+- Both methods work on Linux: the default linker method and
+  `-DPROXY_METHOD=runtime` (thunks are native GNU stubs - no MSVC needed).
 
 ### Linux (GitHub Actions)
 

@@ -1,13 +1,27 @@
 cmake_minimum_required(VERSION 3.15)
 project(dll-proxy LANGUAGES CXX)
 
-# Enforce MSVC compiler only
-if(NOT MSVC)
-    message(FATAL_ERROR "This project requires MSVC (Microsoft Visual C++ Compiler). "
-                        "MinGW-w64 and other compilers are not supported because "
-                        "we use MSVC-specific #pragma comment(linker, ...) directives. "
-                        "\n\n"
-                        "For Linux users: Use GitHub Actions to build with MSVC in the cloud.")
+# MinGW-w64 cross-build detection (GNU compiler targeting Windows).
+# Enabled by: cmake -B build -DCMAKE_SYSTEM_NAME=Windows ... x86_64-w64-mingw32-g++
+if(DEFINED CMAKE_CXX_COMPILER_ID AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WIN32)
+    set(IS_MINGW_BUILD TRUE)
+endif()
+
+# Toolchain support: MSVC (native Windows / GitHub Actions) and
+# MinGW-w64 cross-builds from Linux. Everything else is unsupported.
+if(NOT MSVC AND NOT IS_MINGW_BUILD)
+    message(FATAL_ERROR "Unsupported toolchain configuration.\n"
+            "\n"
+            "Supported setups:\n"
+            "  - MSVC on Windows or GitHub Actions (all forwarding methods)\n"
+            "  - MinGW-w64 cross-builds on Linux (linker method):\n"
+            "      cmake -B build -DCMAKE_SYSTEM_NAME=Windows \\\n"
+            "            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \\\n"
+            "            -DDLL_TYPE=version.dll \\\n"
+            "            [-DDLL_SOURCE=/path/to/the/system/version.dll]\n"
+            "\n"
+            "Current toolchain: ${CMAKE_CXX_COMPILER_ID} targeting "
+            "${CMAKE_SYSTEM_NAME} (WIN32=${WIN32}).")
 endif()
 
 # DLL_TYPE parameter: the file name of ANY x64 system DLL to proxy.
@@ -55,6 +69,13 @@ if(NOT DLL_NAME MATCHES "^[A-Za-z0-9_]+$" OR NOT DLL_EXT STREQUAL ".dll")
 endif()
 set(DLL_FILE_NAME "${DLL_NAME}.dll")
 
+# DLL_SOURCE parameter: explicit path to the source DLL for export
+# extraction. Required on hosts that cannot read the Windows system
+# files directly (e.g. Linux cross-builds using a local copy); at
+# runtime the proxy still targets the DLL_FILE_NAME system module.
+set(DLL_SOURCE "" CACHE FILEPATH
+    "Explicit source DLL path for export extraction (Linux cross-builds)")
+
 # Python is required for the build-time export extraction
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
@@ -85,44 +106,88 @@ set(GEN_DIR "${CMAKE_BINARY_DIR}/exports")
 set(GEN_HEADER "${GEN_DIR}/proxy_exports.h")
 set(GEN_HEADER_RUNTIME "${GEN_DIR}/proxy_exports_runtime.h")
 
-# Generate the export forwarding files from the local system DLL
+# Generate the export forwarding files
 # (always verbose so CI logs show the extracted export list)
 file(MAKE_DIRECTORY "${GEN_DIR}")
 set(GEN_ARGS "")
+if(IS_MINGW_BUILD)
+    list(APPEND GEN_ARGS --def)
+endif()
 if(PROXY_METHOD STREQUAL "runtime")
     list(APPEND GEN_ARGS --runtime)
 endif()
+
+# Linux cross-builds must be given an explicit local copy of the system DLL;
+# Windows hosts (MSVC) read it straight from System32.
+set(EXTRACT_INPUT "${DLL_FILE_NAME}")
+if(DLL_SOURCE)
+    if(NOT EXISTS "${DLL_SOURCE}")
+        message(FATAL_ERROR "DLL_SOURCE '${DLL_SOURCE}' does not exist.")
+    endif()
+    set(EXTRACT_INPUT "${DLL_SOURCE}")
+endif()
+if(IS_MINGW_BUILD AND NOT DLL_SOURCE)
+    message(FATAL_ERROR "MinGW-w64 cross-builds need the source DLL file explicitly:\n"
+                        "  -DDLL_SOURCE=/path/to/${DLL_FILE_NAME}\n"
+                        "(on Windows MSVC builds it is read from System32 directly).")
+endif()
 execute_process(
-    COMMAND "${Python3_EXECUTABLE}" "${EXTRACT_SCRIPT}" "${DLL_FILE_NAME}" ${GEN_ARGS} -o "${GEN_DIR}"
+    COMMAND "${Python3_EXECUTABLE}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${GEN_ARGS} -o "${GEN_DIR}"
     RESULT_VARIABLE GEN_RESULT
 )
 if(NOT GEN_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to extract exports of '${DLL_FILE_NAME}' from your system files.\n"
+    message(FATAL_ERROR "Failed to extract exports of '${DLL_FILE_NAME}'.\n"
                         "Hints:\n"
                         "  - Make sure the DLL name is spelled correctly (e.g. 'winmm.dll', not 'winnm.dll').\n"
                         "  - The DLL must be an x64 file inside System32.\n"
                         "  - Python needs the 'pefile' package: python -m pip install pefile\n"
-                        "  - Try manually: python tools/extract_exports.py ${DLL_FILE_NAME}")
+                        "  - Try manually: python tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
 endif()
 
-# Verify the output files exist (paranoia before they enter the build)
-if(NOT EXISTS "${GEN_DIR}/${DLL_NAME}.h")
-    message(FATAL_ERROR "Export generation did not produce '${GEN_DIR}/${DLL_NAME}.h'")
+# Verify the output file exists (paranoia before it enters the build)
+if(IS_MINGW_BUILD)
+    # MinGW: exports are wired through a generated .def file - forwarder
+    # entries (linker method) or thunk-mapping entries (runtime method).
+    set(GEN_DEFSRC "${GEN_DIR}/${DLL_NAME}.def")
+    if(PROXY_METHOD STREQUAL "runtime")
+        set(GEN_DEFSRC "${GEN_DIR}/${DLL_NAME}_runtime.def")
+    endif()
+    if(NOT EXISTS "${GEN_DEFSRC}")
+        message(FATAL_ERROR "Export generation did not produce '${GEN_DEFSRC}'")
+    endif()
+else()
+    set(GEN_OUTPUT_CANDIDATE "${GEN_DIR}/${DLL_NAME}.h")
+    if(NOT EXISTS "${GEN_OUTPUT_CANDIDATE}")
+        message(FATAL_ERROR "Export generation did not produce '${GEN_OUTPUT_CANDIDATE}'")
+    endif()
 endif()
 
 # Publish generated files under fixed include names so main.cpp needs no
 # per-DLL branching; this is what makes DLL_TYPE fully dynamic.
-configure_file("${GEN_DIR}/${DLL_NAME}.h" "${GEN_HEADER}" COPYONLY)
+set(GEN_DEF "${GEN_DIR}/proxy_exports.def")
+if(IS_MINGW_BUILD)
+    configure_file("${GEN_DEFSRC}" "${GEN_DEF}" COPYONLY)
+else()
+    configure_file("${GEN_DIR}/${DLL_NAME}.h" "${GEN_HEADER}" COPYONLY)
+endif()
 
-# Verify ASM source exists for runtime mode and copy its header under fixed name
+# Verify the runtime header exists for runtime mode and publish it under
+# the fixed include name
 set(PROXY_SOURCES main.cpp)
 if(PROXY_METHOD STREQUAL "runtime")
-    set(ASM_SOURCE "${GEN_DIR}/${DLL_NAME}_runtime.asm")
-    if(NOT EXISTS "${ASM_SOURCE}")
-        message(FATAL_ERROR "Runtime generation did not produce '${ASM_SOURCE}'")
+    if(NOT EXISTS "${GEN_DIR}/${DLL_NAME}_runtime.h")
+        message(FATAL_ERROR "Runtime generation did not produce '${GEN_DIR}/${DLL_NAME}_runtime.h'")
     endif()
     configure_file("${GEN_DIR}/${DLL_NAME}_runtime.h" "${GEN_HEADER_RUNTIME}" COPYONLY)
-    list(APPEND PROXY_SOURCES "${ASM_SOURCE}")
+    if(NOT IS_MINGW_BUILD)
+        # MSVC: MASM jump thunks in a dedicated assembly file
+        set(ASM_SOURCE "${GEN_DIR}/${DLL_NAME}_runtime.asm")
+        if(NOT EXISTS "${ASM_SOURCE}")
+            message(FATAL_ERROR "Runtime generation did not produce '${ASM_SOURCE}'")
+        endif()
+        list(APPEND PROXY_SOURCES "${ASM_SOURCE}")
+    endif()
+    # MinGW: thunks are GNU naked stubs inside the runtime header itself
 endif()
 
 # Create shared library (DLL)
@@ -141,6 +206,22 @@ target_compile_features(${DLL_NAME} PRIVATE cxx_std_17)
 # Add PROXY_RUNTIME definition for runtime forwarding mode
 if(PROXY_METHOD STREQUAL "runtime")
     target_compile_definitions(${DLL_NAME} PRIVATE PROXY_RUNTIME)
+endif()
+
+# MinGW-w64 cross-build flags: forward the exports through the generated
+# .def file (GNU ld resolves "NAME = MODULE.EXTERNAL" lines into forwarder
+# exports); keep the C/C++ runtime statically linked to the proxy itself.
+if(IS_MINGW_BUILD)
+    target_compile_options(${DLL_NAME} PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-Wall>  # warnings on, not treated as errors
+    )
+    target_link_options(${DLL_NAME} PRIVATE
+        -static-libgcc
+        -static-libstdc++
+    )
+    # GNU ld takes .def files as regular link inputs and parses
+    # LIBRARY/EXPORTS from them natively (ld/deffilep.y).
+    target_link_libraries(${DLL_NAME} PRIVATE "${GEN_DEF}")
 endif()
 
 # MSVC-specific compiler flags (scoped to C++ only, not MASM)
@@ -183,12 +264,19 @@ message(STATUS "")
 message(STATUS "===== dll-proxy Build Configuration =====")
 message(STATUS "DLL Type:        ${DLL_NAME} (proxying System32\\${DLL_FILE_NAME})")
 message(STATUS "Proxy Method:    ${PROXY_METHOD}")
-message(STATUS "Output Name:     ${DLL_NAME}.dll")
-message(STATUS "Generated Exports: exports/proxy_exports.h (from local system files)")
+if(IS_MINGW_BUILD)
+    if(PROXY_METHOD STREQUAL "runtime")
+        message(STATUS "Exports File:    exports/proxy_exports.def (thunk mapping, runtime method)")
+    else()
+        message(STATUS "Exports File:    exports/proxy_exports.def (GNU ld forwarders)")
+    endif()
+else()
+    message(STATUS "Generated Exports: exports/proxy_exports.h (MSVC linker directives)")
+endif()
 if(PROXY_METHOD STREQUAL "runtime")
     message(STATUS "ASM Thunks:      exports/${DLL_NAME}_runtime.asm")
 endif()
-message(STATUS "Compiler:        ${CMAKE_CXX_COMPILER_ID}")
+message(STATUS "Compiler:        ${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER})")
 message(STATUS "Build Type:      ${CMAKE_BUILD_TYPE}")
 message(STATUS "========================================")
 message(STATUS "")

@@ -3,22 +3,24 @@
 // ============================================================
 // Export forwarding: choose between linker and runtime methods
 //
-// The forwarding headers are generated at CMake configure time 
+// The forwarding files are generated at CMake configure time
 // by tools/extract_exports.py, which extracts the exports
 // of the requested system DLL (see DLL_TYPE) directly from the local
-// Windows system files. The generated headers are published under fixed
-// names in the build tree ("exports/proxy_exports*.h"), so this file
+// Windows system files. Their outputs are published under fixed
+// names in the build tree ("exports/proxy_exports*"), so this file
 // never needs changes when a new DLL type is used.
 // ============================================================
 #ifdef PROXY_RUNTIME
     // Runtime forwarding: LoadLibrary + GetProcAddress + ASM thunks
     // Compatible with ALL applications including complex game engines
     #include "exports/proxy_exports_runtime.h"
-#else
+#elif defined(_MSC_VER)
     // Linker forwarding: MSVC pragma directives (default)
     // Simple and clean, works for most applications
     #include "exports/proxy_exports.h"
 #endif
+    // MinGW-w64 builds: exports are forwarded through proxy_exports.def,
+    // passed directly to GNU ld (see CMakeLists.txt) - nothing to include.
 
 // Payload function - your custom code goes here
 DWORD WINAPI Payload(LPVOID lpParam) {
