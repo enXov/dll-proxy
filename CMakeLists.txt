@@ -58,6 +58,28 @@ set(DLL_FILE_NAME "${DLL_NAME}.dll")
 # Python is required for the build-time export extraction
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+# Ensure 'pefile' is available for the interpreter CMake found. The 'python'
+# on PATH may be a different installation from the one find_package() picks
+# (common on CI images with several preinstalled Pythons), so installing via
+# the PATH python is not reliable; check and self-install when missing.
+execute_process(
+    COMMAND "${Python3_EXECUTABLE}" -c
+        "import sys, importlib.util as u; sys.exit(0 if u.find_spec('pefile') else 1)"
+    RESULT_VARIABLE PEFILE_CHECK
+)
+if(NOT PEFILE_CHECK EQUAL 0)
+    message(STATUS "pefile not found for ${Python3_EXECUTABLE}; installing it with pip...")
+    execute_process(
+        COMMAND "${Python3_EXECUTABLE}" -m pip install pefile
+        RESULT_VARIABLE PEFILE_INSTALL
+    )
+    if(NOT PEFILE_INSTALL EQUAL 0)
+        message(FATAL_ERROR "Failed to install the 'pefile' Python package "
+                            "(required to extract DLL exports from the system files).\n"
+                            "Install it manually with: \"${Python3_EXECUTABLE}\" -m pip install pefile")
+    endif()
+endif()
+
 set(EXTRACT_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tools/extract_exports.py")
 set(GEN_DIR "${CMAKE_BINARY_DIR}/exports")
 set(GEN_HEADER "${GEN_DIR}/proxy_exports.h")
