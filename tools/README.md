@@ -9,12 +9,15 @@ Windows DLL files or generated headers.
 When you run CMake, the following happens automatically:
 
 ```
-1. cmake -B build -DDLL_TYPE=winmm.dll -DPROXY_METHOD=linker
+1. cmake -B build -DDLL_TYPE=winmm.dll [toolchain flags - see the repo README]
 2. CMake runs:  python tools/extract_exports.py winmm.dll -o build/exports
-   (source: the build machine's own System32, located via GLOBALROOT\SystemRoot)
-3. Generated headers are published as build/exports/proxy_exports*.h
-4. main.cpp includes them; the MSVC linker applies the pragma forwarding
-5. Output: build/Release/winmm.dll
+   (source: the build machine's own System32 via GLOBALROOT\SystemRoot,
+   or DLL_SOURCE on Linux cross-builds)
+3. Generated files are published under fixed names in build/exports/
+   (proxy_exports.h for MSVC, proxy_exports.def for MinGW-w64)
+4. main.cpp is built; the linker applies the forwarding
+   (MSVC pragmas inside the header, or the .def on the link line)
+5. Output: winmm.dll
 ```
 
 Because the DLL name is just a string, **adding a new DLL type requires zero
@@ -85,15 +88,15 @@ runtime header + runtime def pair; no MSVC-only files are generated.
 
 ## Notes
 
-- **System32 sourcing requires Windows** (GitHub Actions runner or local
-  Windows machine). Explicit file paths work anywhere.
+- **System32 sourcing requires a Windows machine**; explicit file paths
+  work anywhere (Linux cross-builds pass `DLL_SOURCE` to CMake).
 - x64 only: non-x64 DLLs are rejected with a clear error (this also catches
   32-bit Python resolving System32 to SysWOW64).
 - Ordinals are preserved automatically, including ordinal-only (NONAME)
   exports and non-1 ordinal bases (e.g. winmm.dll starts at ordinal 2).
-- Overall exports are read from the *build machine's* system files: builds
-  on a Windows runner use pristine Microsoft binaries, while building on a
-  custom-release ISO machine bakes in exactly that ISO's export surface.
+- Overall exports are read from the DLL used as source (the build machine's
+  system files on Windows, or `DLL_SOURCE` elsewhere) - builds always reflect
+  the export surface of whatever source was used.
 
 ## References
 

@@ -20,16 +20,6 @@ DWORD WINAPI Payload(LPVOID lpParam) {
 
 That's it! Build, drop the DLL next to your target application, and your code runs instantly.
 
-## Why This Exists
-
-Many of the applications, tools, or whatever I used generally utilized something called winmm.dll, and after approximately 2-3 days of research, I decided to build this project to make the process as simple as possible.
-
-The project started with pure MSVC pragma forwarding - no `.def` files, no assembly, no manual stubs. Just one `#pragma` per export. That worked great for most applications.
-
-But some applications - particularly games built with complex engines(UE 5) - crashed immediately on launch. The PE loader's automatic resolution of pragma-level export forwarders conflicted with their aggressive multi-threaded startup and module validation. The crash happened at loader level, before our code even ran.
-
-To fix this, I added **runtime forwarding** - `LoadLibrary` + `GetProcAddress` + MASM x64 jump thunks. Both methods now ship in the same project, selectable with a single CMake flag (`-DPROXY_METHOD=runtime`).
-
 ## Forwarding Methods
 
 This project supports two export forwarding architectures:
@@ -67,10 +57,23 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
 
 ## Requirements
 
-- **Compiler**: MSVC (Windows / GitHub Actions) or **MinGW-w64** (Linux cross-build, both methods)
+### Windows (MSVC)
+
+- **Compiler**: MSVC (Visual Studio 2019+ or Build Tools)
 - **Build**: CMake 3.15+
-- **Python**: 3.8+ with `pefile` (local builds only, the GitHub Actions workflow installs it automatically)
-- **Target**: Windows x64 only (no 32-bit support)
+- **Python**: 3.8+ (CMake provisions `pefile` in an isolated build-tree venv
+  automatically - it never touches your system or global Python)
+- **Target**: Windows x64 only
+
+### Linux (MinGW-w64 cross-build)
+
+- **Compiler**: the `mingw-w64-gcc` package (pulls in binutils, CRT and headers)
+  - Arch: `sudo pacman -S mingw-w64-gcc`
+  - Debian/Ubuntu: `sudo apt install g++-mingw-w64-x86-64`
+  - Fedora: `sudo dnf install mingw64-gcc`
+- **Build**: CMake 3.15+ and make (or Ninja)
+- **Python**: 3.8+ (same isolated-venv rule as on Windows)
+- **Source DLL**: an x64 copy of the system DLL being proxied, passed via `DLL_SOURCE`
 
 ### Windows (Local Build)
 
@@ -88,34 +91,26 @@ Output: `build/Release/<dll_type>.dll`
 
 ### Linux (MinGW-w64 Cross-Build, no Windows needed)
 
-Build directly on your machine with the cross toolchain:
+Build directly on your machine using the cross-toolchain:
 
 ```bash
-sudo pacman -S mingw-w64-gcc          # Arch (pulls binutils + CRT + headers)
-
-# Linker forwarding - exports go through a generated .def file (GNU ld)
+# Linker forwarding (default, simple) - exports go through a generated .def file
 cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
       -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
       -DDLL_TYPE=version.dll \
-      -DDLL_SOURCE=/path/to/real/version.dll      # an x64 copy of the system DLL
+      -DDLL_SOURCE=/path/to/version.dll
+cmake --build build
+
+# Runtime forwarding (maximum compatibility)
+cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DDLL_TYPE=winmm.dll \
+      -DPROXY_METHOD=runtime \
+      -DDLL_SOURCE=/path/to/winmm.dll
 cmake --build build
 ```
 
-- `DLL_TYPE` is the proxy name/target; `DLL_SOURCE` is any local copy of that
-  system DLL the exports are extracted from (Linux hosts cannot read the
-  Windows system files directly - use e.g. a Wine prefix copy,
-  `~/.wine/drive_c/windows/system32/version.dll`, an ISO, or a symbol-server
-  download).
-- Both methods work on Linux: the default linker method and
-  `-DPROXY_METHOD=runtime` (thunks are native GNU stubs - no MSVC needed).
-
-### Linux (GitHub Actions)
-
-1. Push to GitHub
-2. Go to **Actions** → **Build DLL Proxy**
-3. Enter any DLL name (e.g. `winmm.dll`) and choose the proxy method
-4. Download the artifact - exports are extracted from the runner's system files automatically
-
+Output: `build/<dll_type>.dll`
 
 ## Usage
 
@@ -127,7 +122,7 @@ cmake --build build
 
 ### Linux (Wine/Proton)
 
-1. Build proxy DLL via GitHub Actions
+1. Build the proxy DLL locally using MinGW-w64 (as described above).
 2. Place DLL in the game/application directory
 3. Set DLL override environment variable:
 
@@ -143,12 +138,26 @@ WINEDLLOVERRIDES="winmm=n,b;version=n,b" %command%
 ```
 
 **Override flags:**
-- `n` = native (load Windows DLL first)
-- `b` = builtin (fallback to Wine's builtin implementation)
+- `n` = native (load the proxy DLL first)
+- `b` = builtin (Wine's own implementation as fallback)
+
+## FAQ
+
+### Why is this not written in Rust?
+
+Because there is nothing for Rust to make safer and faster. The hand-written part is ~50 lines of Win32 glue (DllMain + a payload thread); the rest is generated
+forwarding machinery, and calls are forwarded without being interpreted.
+Rust would only add a third toolchain around output that is native to the
+C/C++ toolchains anyway (pragma directives, `.def` files, MASM/GAS thunks),
+and the proxy function/ABI layer in Rust brings no additional rewrites.
+
+### Why is there no 32-bit support?
+
+There's no need for overengineering or making things unnecessarily difficult for ourselves; most things have dropped 32-bit support - for example, newer versions of Windows, Steam, and many others.
 
 ## Credits
 
-- [Perfect DLL Proxy](https://github.com/mrexodia/perfect-dll-proxy) by mrexodia - The pragma forwarding technique and `GLOBALROOT` path approach that this project is built on.
+- [Perfect DLL Proxy](https://github.com/mrexodia/perfect-dll-proxy) - The pragma forwarding technique and `GLOBALROOT` path approach that this project is built on.
 - [UE4SS](https://github.com/UE4SS-RE/RE-UE4SS) - Unreal Engine modding framework whose runtime proxy architecture (LoadLibrary + GetProcAddress + ASM thunks) inspired our runtime forwarding method.
 - [ReShade](https://github.com/crosire/reshade) - Graphics post-processing injector that uses the same DLL proxy + runtime forwarding pattern.
 

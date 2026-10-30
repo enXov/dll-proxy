@@ -146,8 +146,8 @@ def resolve_dll_source(arg):
     print(f"  - {candidate}          (as given)")
     print(f"  - {script_local}  (next to the script)")
     print(f"  - {system_path}  (Windows system files)")
-    print("\nNote: system file sourcing requires running on Windows "
-          "(GitHub Actions or a local Windows machine).")
+    print("\nNote: system-file sourcing needs a Windows machine. On other\n"
+          "systems pass an explicit x64 copy of the DLL.\n")
     return None
 
 
@@ -358,8 +358,12 @@ def generate_runtime_header(dll_name, exports):
     """
     Generate runtime forwarding header file.
     Uses LoadLibrary + GetProcAddress for export resolution.
-    Requires companion .asm file with jump thunks.
-    
+
+    Thunks: MSVC builds pair this header with a separate
+    <name>_runtime.asm (MASM) and pragma export directives; MinGW-w64
+    builds use the GNU naked stubs inside this header plus a generated
+    <name>_runtime.def export mapping.
+
     This method is compatible with ALL applications including complex game engines.
     
     Args:
@@ -766,8 +770,10 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
         output_dir: Custom output directory for generated files
         verbose: Print detailed information
         use_ordinals: Include ordinals in exports (default: True)
-        runtime: Also generate runtime forwarding files (.h + .asm, MSVC/MASM)
-        def_out: Generate a GNU ld .def file (MinGW-w64) instead of the
+        runtime: Also generate runtime forwarding files
+                 (.h + .asm for MSVC; .h + .def for MinGW-w64 when
+                 def_out is set - GNU thunks live in the header)
+        def_out: Generate GNU ld .def output (MinGW-w64) instead of the
                  MSVC pragma header
 
     Returns:
@@ -876,6 +882,10 @@ Examples:
 Usage from CMake (generation runs automatically at configure time):
   cmake -B build -DDLL_TYPE=winmm.dll -DPROXY_METHOD=runtime
   cmake --build build --config Release
+
+  # MinGW-w64 cross-build on Linux (see the repo README for the full flags)
+  cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
+        -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DDLL_TYPE=winmm.dll
 """
     )
     
@@ -906,7 +916,8 @@ Usage from CMake (generation runs automatically at configure time):
     parser.add_argument(
         '--runtime',
         action='store_true',
-        help='Also generate runtime forwarding files (.h + .asm) for maximum compatibility'
+        help='Also generate runtime forwarding files '
+             '(.h + .asm for MSVC; .h + .def for MinGW-w64 when paired with --def)'
     )
 
     parser.add_argument(

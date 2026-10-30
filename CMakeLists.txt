@@ -7,14 +7,14 @@ if(DEFINED CMAKE_CXX_COMPILER_ID AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU" AND WI
     set(IS_MINGW_BUILD TRUE)
 endif()
 
-# Toolchain support: MSVC (native Windows / GitHub Actions) and
-# MinGW-w64 cross-builds from Linux. Everything else is unsupported.
+# Toolchain support: MSVC (native Windows) and MinGW-w64 cross-builds
+# from Linux. Everything else is unsupported.
 if(NOT MSVC AND NOT IS_MINGW_BUILD)
     message(FATAL_ERROR "Unsupported toolchain configuration.\n"
             "\n"
             "Supported setups:\n"
-            "  - MSVC on Windows or GitHub Actions (all forwarding methods)\n"
-            "  - MinGW-w64 cross-builds on Linux (linker method):\n"
+            "  - MSVC on Windows (all forwarding methods)\n"
+            "  - MinGW-w64 cross-builds on Linux (all forwarding methods):\n"
             "      cmake -B build -DCMAKE_SYSTEM_NAME=Windows \\\n"
             "            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \\\n"
             "            -DDLL_TYPE=version.dll \\\n"
@@ -25,13 +25,16 @@ if(NOT MSVC AND NOT IS_MINGW_BUILD)
 endif()
 
 # DLL_TYPE parameter: the file name of ANY x64 system DLL to proxy.
-# Pass the DLL file name (e.g. "winmm.dll"); exports are extracted from the
-# local Windows system files at configure time.
+# Pass the DLL file name (e.g. "winmm.dll"); exports are extracted at
+# configure time from the local Windows system files (System32), or from
+# DLL_SOURCE on hosts that cannot read them (Linux cross-builds).
 set(DLL_TYPE "version.dll" CACHE STRING "System DLL file name to proxy (e.g. version.dll, winmm.dll)")
 
 # PROXY_METHOD parameter: linker (default) or runtime
-# - linker: Uses MSVC pragma export forwarding (simple, works for most apps)
-# - runtime: Uses LoadLibrary + GetProcAddress + ASM thunks (required for complex applications)
+# - linker: PE-level forwarder exports, no runtime code
+#   (MSVC: #pragma comment(linker, ...) / MinGW: generated .def file)
+# - runtime: LoadLibrary + GetProcAddress + jump thunks
+#   (required for complex applications/game engines)
 set(PROXY_METHOD "linker" CACHE STRING "Export forwarding method (linker or runtime)")
 set_property(CACHE PROXY_METHOD PROPERTY STRINGS linker runtime)
 
@@ -41,8 +44,9 @@ if(NOT PROXY_METHOD STREQUAL "linker" AND NOT PROXY_METHOD STREQUAL "runtime")
                         "Supported methods: linker, runtime")
 endif()
 
-# Enable MASM assembler if runtime mode is selected
-if(PROXY_METHOD STREQUAL "runtime")
+# MSVC runtime builds need the MASM assembler (thunks in a .asm file);
+# MinGW builds use GNU thunks inside the runtime header instead.
+if(PROXY_METHOD STREQUAL "runtime" AND NOT IS_MINGW_BUILD)
     enable_language(ASM_MASM)
 endif()
 
@@ -80,9 +84,9 @@ set(DLL_SOURCE "" CACHE FILEPATH
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 # Ensure 'pefile' is available for the interpreter CMake found. The 'python'
-# on PATH may be a different installation from the one find_package() picks
-# (common on CI images with several preinstalled Pythons), so installing via
-# the PATH python is not reliable; check and self-install when missing.
+# on PATH may be a different installation from the one find_package() picks,
+# so installing via the PATH python is not reliable; check and self-provision
+# when missing.
 execute_process(
     COMMAND "${Python3_EXECUTABLE}" -c
         "import sys, importlib.util as u; sys.exit(0 if u.find_spec('pefile') else 1)"
@@ -148,7 +152,7 @@ set(GEN_HEADER "${GEN_DIR}/proxy_exports.h")
 set(GEN_HEADER_RUNTIME "${GEN_DIR}/proxy_exports_runtime.h")
 
 # Generate the export forwarding files
-# (always verbose so CI logs show the extracted export list)
+# (always verbose so the configure log shows the extracted export list)
 file(MAKE_DIRECTORY "${GEN_DIR}")
 set(GEN_ARGS "")
 if(IS_MINGW_BUILD)
@@ -296,7 +300,7 @@ endif()
 
 # Include directories:
 # - project root for main.cpp
-# - build tree for generated exports ("exports/proxy_exports*.h")
+# - build tree for the generated export files ("exports/proxy_exports*")
 target_include_directories(${DLL_NAME} PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_BINARY_DIR}
@@ -317,7 +321,11 @@ else()
     message(STATUS "Generated Exports: exports/proxy_exports.h (MSVC linker directives)")
 endif()
 if(PROXY_METHOD STREQUAL "runtime")
-    message(STATUS "ASM Thunks:      exports/${DLL_NAME}_runtime.asm")
+    if(IS_MINGW_BUILD)
+        message(STATUS "Thunks:          GNU naked stubs in exports/proxy_exports_runtime.h")
+    else()
+        message(STATUS "ASM Thunks:      exports/${DLL_NAME}_runtime.asm")
+    endif()
 endif()
 message(STATUS "Compiler:        ${CMAKE_CXX_COMPILER_ID} (${CMAKE_CXX_COMPILER})")
 message(STATUS "Build Type:      ${CMAKE_BUILD_TYPE}")
