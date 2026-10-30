@@ -51,8 +51,6 @@ Uses `LoadLibrary` + `GetProcAddress` to manually resolve the original DLL at st
 
 ## Supported DLLs
 
-**Any x64 system DLL that exists in System32** - the name is just a string you pass at build time, and exports are extracted from the build machine's own system files. No headers, lists or code need to be updated when a new DLL is added.
-
 See [tools/README.md](tools/README.md) for how the export extraction works.
 
 ## Requirements
