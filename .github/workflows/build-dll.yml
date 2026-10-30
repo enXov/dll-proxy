@@ -29,7 +29,11 @@ jobs:
         run: python -m pip install pefile
       
       - name: Configure CMake (extracts exports from system files)
-        run: cmake -B build -DDLL_TYPE=${{ inputs.dll_type }} -DPROXY_METHOD=${{ inputs.proxy_method }}
+        shell: pwsh
+        env:
+          DLL_TYPE_NAME: ${{ inputs.dll_type }}
+          PROXY_METHOD_NAME: ${{ inputs.proxy_method }}
+        run: cmake -B build "-DDLL_TYPE=$env:DLL_TYPE_NAME" "-DPROXY_METHOD=$env:PROXY_METHOD_NAME"
       
       - name: Build DLL (Release)
         run: cmake --build build --config Release
