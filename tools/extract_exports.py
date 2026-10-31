@@ -110,7 +110,31 @@ def resolve_dll_source(arg):
     return None
 
 
-def generate_header(dll_name, exports, use_ordinals=True):
+def forward_targets(dll_name, target_module=None):
+    """
+    Compute the module a proxy forwards its exports to.
+
+    Default: the Windows system module via the GLOBALROOT NT path, which
+    resolves regardless of the installation drive - the same module the
+    proxy impersonates. This works for kernel/loader forwarder strings,
+    not as a runtime LoadLibrary path.
+
+    target_module: any module string a forwarder may legally reference -
+    a plain module name (resolved through the loading application's
+    directory first, the classic same-folder hijack) or an absolute path.
+    It must NOT be the proxy's own name (that would forward to itself).
+
+    Returns: (natural, c_escaped) - the raw string, and the same string
+    with backslashes doubled for embedding in a C string literal.
+    """
+    if target_module:
+        natural = str(target_module)
+    else:
+        natural = rf"\\.\GLOBALROOT\SystemRoot\System32\{dll_name}"
+    return natural, natural.replace('\\', '\\\\')
+
+
+def generate_header(dll_name, exports, use_ordinals=True, target_module=None):
     """
     Generate C/C++ header file with MSVC pragma export forwarding (linker method).
     Uses GLOBALROOT path inspired by Perfect DLL Proxy for maximum compatibility.
@@ -126,11 +150,11 @@ def generate_header(dll_name, exports, use_ordinals=True):
         String containing the header file content
     """
     base_name = dll_name.replace('.dll', '').upper()
-    
-    # Use GLOBALROOT path (inspired by Perfect DLL Proxy)
-    # This is more robust than C:\Windows as it works regardless of Windows installation directory
-    original_path = f"\\\\\\\\.\\\\GLOBALROOT\\\\SystemRoot\\\\System32\\\\{dll_name}"
-    path_display = f"\\\\.\\GLOBALROOT\\SystemRoot\\System32\\{dll_name}"
+
+    # Module the exports forward to (GLOBALROOT system path by default,
+    # or a custom target such as the renamed original for private DLLs)
+    original_path_c = forward_targets(dll_name, target_module)[1]
+    path_display = forward_targets(dll_name, target_module)[0]
     
     # COM functions that need PRIVATE flag (like Perfect DLL Proxy)
     com_functions = {
@@ -181,17 +205,14 @@ def generate_header(dll_name, exports, use_ordinals=True):
  *   #include "exports/{dll_name.replace('.dll', '')}.h"
  * 
  * This header uses MSVC #pragma directives to forward all exports
- * to the original system DLL without manual function implementation.
- * 
- * The GLOBALROOT path ensures compatibility regardless of Windows
- * installation directory and works at the NT kernel level.
+ * to the original module without manual function implementation.
  */
 
 #ifndef {base_name}_EXPORTS_H
 #define {base_name}_EXPORTS_H
 
-// Original DLL path (GLOBALROOT for maximum compatibility)
-#define ORIGINAL_DLL "{original_path}"
+// Module the exports forward to (GLOBALROOT system path by default)
+#define ORIGINAL_DLL "{original_path_c}"
 
 // Export forwarding macros (like Perfect DLL Proxy)
 
@@ -252,12 +273,12 @@ def generate_header(dll_name, exports, use_ordinals=True):
     return header
 
 
-def generate_def(dll_name, exports, use_ordinals=True):
+def generate_def(dll_name, exports, use_ordinals=True, target_module=None):
     """
     Generate a GNU ld .def forwarding file (for MinGW-w64 builds).
 
-    Forwarder entries use the exact same GLOBALROOT path as the MSVC
-    pragma output. binutils ld parses .def files natively for PE targets:
+    Forwarder entries use the exact same module path as the MSVC pragma
+    output. binutils ld parses .def files natively for PE targets:
 
       - ld/deffilep.y: export lines accept quoted names and the
         "NAME = MODULE-NAME.EXTERNAL-NAME" forwarder form
@@ -275,6 +296,7 @@ def generate_def(dll_name, exports, use_ordinals=True):
         dll_name: Name of the DLL (e.g., "version.dll")
         exports: List of tuples (function_name, ordinal)
         use_ordinals: Pin ordinals on named exports (default: True)
+        target_module: Module to forward to (default: GLOBALROOT system path)
 
     Returns:
         String containing the .def file content
@@ -284,8 +306,8 @@ def generate_def(dll_name, exports, use_ordinals=True):
         'DllRegisterServer', 'DllUnregisterServer'
     }
 
-    # Same GLOBALROOT path the MSVC pragma output forwards to
-    dllpath = rf"\\.\GLOBALROOT\SystemRoot\System32\{dll_name}"
+    # Same forward target the MSVC pragma output uses
+    dllpath = forward_targets(dll_name, target_module)[0]
 
     lines = [
         f"; Auto-generated GNU ld forwarding file for {dll_name}",
@@ -313,7 +335,7 @@ def generate_def(dll_name, exports, use_ordinals=True):
     return "\n".join(lines)
 
 
-def generate_runtime_header(dll_name, exports):
+def generate_runtime_header(dll_name, exports, target_module=None):
     """
     Generate runtime forwarding header file.
     Uses LoadLibrary + GetProcAddress for export resolution.
@@ -430,6 +452,24 @@ extern "C" {{
 
     header += "#endif\n"
     
+    # Where the original module is loaded from at runtime: the system
+    # directory by default, or the custom forward target verbatim
+    # (a plain module name resolves in the loading application's
+    # directory first - the classic same-folder layout)
+    if target_module:
+        load_block = (f'    HMODULE hOriginal = LoadLibraryA("'
+                      f'{forward_targets(dll_name, target_module)[1]}");')
+    else:
+        load_block = (
+            '    // Get System32 directory dynamically (works on all '
+            'Windows installs)\n'
+            '    char sysDir[MAX_PATH];\n'
+            '    GetSystemDirectoryA(sysDir, MAX_PATH);\n\n'
+            '    char dllPath[MAX_PATH];\n'
+            f'    sprintf_s(dllPath, MAX_PATH, "%s\\\\{dll_name}", '
+            'sysDir);\n\n'
+            '    HMODULE hOriginal = LoadLibraryA(dllPath);')
+
     # LoadOriginalDLL function
     header += f"""
 // ============================================================
@@ -437,14 +477,7 @@ extern "C" {{
 // Call this from DllMain(DLL_PROCESS_ATTACH)
 // ============================================================
 inline bool LoadOriginalDLL() {{
-    // Get System32 directory dynamically (works on all Windows installs)
-    char sysDir[MAX_PATH];
-    GetSystemDirectoryA(sysDir, MAX_PATH);
-
-    char dllPath[MAX_PATH];
-    sprintf_s(dllPath, MAX_PATH, "%s\\\\{dll_name}", sysDir);
-
-    HMODULE hOriginal = LoadLibraryA(dllPath);
+{load_block}
     if (!hOriginal) {{
         return false;
     }}
@@ -719,13 +752,13 @@ def print_export_summary(dll_name, exports):
     print(f"{'='*60}\n")
 
 
-def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runtime=False, def_out=False):
+def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
+                runtime=False, def_out=False, target_module=None):
     """
     Process a single DLL: extract exports and generate the output files.
 
     Args:
-        dll_arg: DLL input - an existing file path, or a bare system DLL
-                 name ("winmm.dll") resolved from System32
+        dll_arg: Path to the DLL file to extract exports from
         output_dir: Custom output directory for generated files
         verbose: Print detailed information
         use_ordinals: Include ordinals in exports (default: True)
@@ -734,6 +767,8 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
                  def_out is set - GNU thunks live in the header)
         def_out: Generate GNU ld .def output (MinGW-w64) instead of the
                  MSVC pragma header
+        target_module: Module the proxy forwards to (default: the
+                 GLOBALROOT system module matching the source's name)
 
     Returns:
         True if successful, False otherwise
@@ -766,7 +801,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
         # MinGW-w64 runtime bundle: runtime header (GNU naked thunks
         # included, MSVC pragmas gated out) + thunk-mapping .def.
         # No MASM assembly and no pragma/forwarder files.
-        rt_header = generate_runtime_header(dll_name, exports)
+        rt_header = generate_runtime_header(dll_name, exports, target_module)
         rt_header_path, _ = save_runtime_files(dll_name, rt_header, None, output_dir)
         rt_def_content = generate_runtime_def(dll_name, exports)
         rt_def_path = save_runtime_def(dll_name, rt_def_content, output_dir)
@@ -778,7 +813,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
                   f"-DDLL_SOURCE=/path/to/{dll_name} -DPROXY_METHOD=runtime")
     elif def_out:
-        def_content = generate_def(dll_name, exports, use_ordinals)
+        def_content = generate_def(dll_name, exports, use_ordinals, target_module)
         def_path = save_def(dll_name, def_content, output_dir)
 
         if verbose:
@@ -788,7 +823,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
                   f"-DDLL_SOURCE=/path/to/{dll_name}")
     else:
-        header_content = generate_header(dll_name, exports, use_ordinals)
+        header_content = generate_header(dll_name, exports, use_ordinals, target_module)
         header_path = save_header(dll_name, header_content, output_dir)
 
         if verbose:
@@ -796,7 +831,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
 
         # Generate runtime forwarding files (MSVC/MASM, if requested)
         if runtime:
-            rt_header = generate_runtime_header(dll_name, exports)
+            rt_header = generate_runtime_header(dll_name, exports, target_module)
             rt_asm = generate_runtime_asm(dll_name, exports)
             rt_header_path, rt_asm_path = save_runtime_files(
                 dll_name, rt_header, rt_asm, output_dir
@@ -820,20 +855,15 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Generate linker forwarding header from the system files
-  python extract_exports.py winmm.dll
-
-  # Same, but also generate runtime forwarding files (.h + .asm)
-  python extract_exports.py winmm.dll --runtime
-
   # Generate a GNU ld .def file for MinGW-w64 local builds
-  python extract_exports.py winmm.dll --def
+  python extract_exports.py /path/to/winmm.dll --def
 
-  # Generate from an explicit DLL file (any location)
-  python extract_exports.py X:\\copy\\of\\version.dll --runtime
+  # Custom forward target, for a private DLL whose original was
+  # renamed next to where the proxy will be dropped
+  python extract_exports.py /path/to/custom.dll --target custom_orig.dll
 
   # Custom output directory
-  python extract_exports.py winmm.dll -o /path/to/output
+  python extract_exports.py /path/to/winmm.dll -o /path/to/output
 
 Usage from CMake (generation runs automatically at configure time):
   cmake -B build -DDLL_SOURCE=C:\\Windows\\System32\\winmm.dll
@@ -883,17 +913,27 @@ Usage from CMake (generation runs automatically at configure time):
         dest='def_file',
         help='Generate a GNU ld .def file (MinGW-w64) instead of the MSVC pragma header'
     )
-    
+
+    parser.add_argument(
+        '--target',
+        metavar='MODULE',
+        help='Module the proxy forwards to (default: '
+             '\\\\.\\GLOBALROOT\\SystemRoot\\System32\\<source dll name>). '
+             'Use a custom target for private DLLs - point it at the '
+             'renamed original (e.g. "game_orig.dll", resolved in the '
+             "application's directory). Never the proxy's own name."
+    )
+
     args = parser.parse_args()
-    
+
     # Determine ordinal usage
     use_ordinals = not args.no_ordinals
-    
+
     # Process single DLL
     if args.dll_file:
         success = process_dll(args.dll_file, args.output, verbose=not args.quiet,
                             use_ordinals=use_ordinals, runtime=args.runtime,
-                            def_out=args.def_file)
+                            def_out=args.def_file, target_module=args.target)
         return 0 if success else 1
     
     # No arguments provided

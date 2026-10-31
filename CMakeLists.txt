@@ -95,14 +95,18 @@ execute_process(
 )
 # pefile is required by tools/extract_exports.py. When the interpreter
 # CMake found does not have it, never touch the system/user Python:
-# an isolated venv is created inside the build tree and pefile is
-# installed there. System-wide Python stays untouched, and PEP 668
-# locked distributions (Arch/Artix/Fedora/...) work without any flags.
+# an isolated venv is created at the project root (one copy, shared by
+# every build directory) and pefile is installed there. System-wide
+# Python stays untouched, and PEP 668 locked distributions
+# (Arch/Artix/Fedora/...) work without any flags.
 set(EXTRACT_PYTHON "${Python3_EXECUTABLE}")
 if(NOT PEFILE_CHECK EQUAL 0)
+    # Tooling venv: ONE copy for the whole project, independent of which
+    # build directory (-B ...) the user picks - it always lands at the
+    # project root, so no build layout can duplicate it.
+    set(TOOLING_VENV "${CMAKE_CURRENT_SOURCE_DIR}/tooling_venv")
     message(STATUS "pefile not found for ${Python3_EXECUTABLE}; "
-                   "setting up an isolated 'tooling_venv' inside the build tree...")
-    set(TOOLING_VENV "${CMAKE_BINARY_DIR}/tooling_venv")
+                   "using shared project venv: ${TOOLING_VENV}")
     if(CMAKE_HOST_UNIX)
         set(TOOLING_VENV_PY "${TOOLING_VENV}/bin/python")
     else()
@@ -152,6 +156,29 @@ set(GEN_DIR "${CMAKE_BINARY_DIR}/exports")
 set(GEN_HEADER "${GEN_DIR}/proxy_exports.h")
 set(GEN_HEADER_RUNTIME "${GEN_DIR}/proxy_exports_runtime.h")
 
+# FORWARD_TARGET_PATH parameter: the module the proxy forwards to, as a
+# module string the loader/loader can resolve. Empty (default) means the
+# GLOBALROOT system module matching the source name, i.e. the documented
+# system-DLL behavior. Set it for private DLLs, pointing at the renamed
+# original - a plain module name resolves in the loading application's
+# directory first (classic same-folder layout), an absolute path works
+# too. Never set it to the proxy's own name (that would forward to
+# itself); CMake rejects a self-forwarding configuration.
+set(FORWARD_TARGET_PATH "" CACHE STRING
+    "Module the proxy forwards to (default: the GLOBALROOT system module of the source name)")
+if(FORWARD_TARGET_PATH)
+    get_filename_component(FWD_NAME "${FORWARD_TARGET_PATH}" NAME)
+    string(TOLOWER "${FWD_NAME}" FWD_NAME_LC)
+    string(TOLOWER "${DLL_FILE_NAME}" DLL_FILE_NAME_LC)
+    if(FWD_NAME_LC STREQUAL DLL_FILE_NAME_LC)
+        message(FATAL_ERROR "FORWARD_TARGET_PATH '${FORWARD_TARGET_PATH}' points at the "
+                            "proxy's own name (${DLL_FILE_NAME}) - that would forward "
+                            "exports back into this same DLL. Point the forwarder at the "
+                            "original instead (e.g. '${DLL_NAME}_orig.dll' next to the proxy, "
+                            "or a full path).")
+    endif()
+endif()
+
 # Generate the export forwarding files
 # (always verbose so the configure log shows the extracted export list)
 file(MAKE_DIRECTORY "${GEN_DIR}")
@@ -161,6 +188,9 @@ if(IS_MINGW_BUILD)
 endif()
 if(PROXY_METHOD STREQUAL "runtime")
     list(APPEND GEN_ARGS --runtime)
+endif()
+if(FORWARD_TARGET_PATH)
+    list(APPEND GEN_ARGS --target "${FORWARD_TARGET_PATH}")
 endif()
 
 set(EXTRACT_INPUT "${DLL_SOURCE}")
@@ -172,7 +202,7 @@ if(NOT GEN_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to extract exports of '${DLL_SOURCE}'.\n"
                         "Hints:\n"
                         "  - The DLL file must be an x64 (AMD64) PE with an export directory.\n"
-                        "  - CMake installs pefile into an isolated build-tree venv automatically\n"
+                        "  - CMake provisions pefile in the project's tooling_venv automatically\n"
                         "    (${EXTRACT_PYTHON}); try it manually to see the full error.\n"
                         "  - Try manually: ${EXTRACT_PYTHON} tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
 endif()
@@ -302,8 +332,13 @@ target_include_directories(${DLL_NAME} PRIVATE
 # Print build information
 message(STATUS "")
 message(STATUS "===== dll-proxy Build Configuration =====")
-message(STATUS "DLL Type:        ${DLL_NAME} (proxying System32\\${DLL_FILE_NAME})")
+message(STATUS "Proxy DLL:       ${DLL_NAME}")
 message(STATUS "Proxy Method:    ${PROXY_METHOD}")
+if(FORWARD_TARGET_PATH)
+    message(STATUS "Forward Target:  ${FORWARD_TARGET_PATH}")
+else()
+    message(STATUS "Forward Target:  System32\\${DLL_FILE_NAME} (default)")
+endif()
 if(IS_MINGW_BUILD)
     if(PROXY_METHOD STREQUAL "runtime")
         message(STATUS "Exports File:    exports/proxy_exports.def (thunk mapping, runtime method)")

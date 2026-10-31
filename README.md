@@ -59,8 +59,9 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
 
 - **Compiler**: MSVC (Visual Studio 2019+ or Build Tools)
 - **Build**: CMake 3.15+
-- **Python**: 3.8+ (CMake provisions `pefile` in an isolated build-tree venv
-  automatically - it never touches your system or global Python)
+- **Python**: 3.8+ (CMake provisions `pefile` in a `tooling_venv` at the
+  project root, shared by all builds - it never touches your system or
+  global Python)
 - **Target**: Windows x64 only
 - **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
   (the proxy is named after it)
@@ -72,7 +73,7 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
   - Debian/Ubuntu: `sudo apt install g++-mingw-w64-x86-64`
   - Fedora: `sudo dnf install mingw64-gcc`
 - **Build**: CMake 3.15+ and make (or Ninja)
-- **Python**: 3.8+ (same isolated-venv rule as on Windows)
+- **Python**: 3.8+ (same `tooling_venv` rule as on Windows)
 - **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
   (the proxy is named after it)
 
@@ -110,6 +111,24 @@ cmake --build build
 ```
 
 Output: `build/<dll_source_name>.dll`
+
+### Proxying a Custom (Non-System) DLL
+
+The same flow works for an application's own DLLs. The original is
+renamed next to where the proxy will sit, and `FORWARD_TARGET_PATH`
+points the forwarders at it:
+
+```bash
+cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DDLL_SOURCE=$PWD/<target>.dll \
+      -DFORWARD_TARGET_PATH=<target>_orig.dll
+cmake --build build
+```
+
+- A plain module name in `FORWARD_TARGET_PATH` is resolved in the
+  application's directory first (an absolute path works too).
+- Same flags apply on Windows with MSVC too.
 
 ## Usage
 

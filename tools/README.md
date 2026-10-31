@@ -66,6 +66,10 @@ Options:
   --runtime             Also generate runtime forwarding files
                         (.h + .asm for MSVC, .h + .def when paired with --def)
   --def                 Generate GNU ld .def output (MinGW-w64)
+  --target MODULE       Module the proxy forwards to (default: the
+                        GLOBALROOT system module of the source's name).
+                        For private DLLs, point it at the renamed original
+                        (e.g. "custom_orig.dll"); never the proxy's own name.
   --no-ordinals         Disable ordinals (breaks ordinal-based imports)
   -h, --help            Show help message
 ```

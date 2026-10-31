@@ -2,6 +2,10 @@
 build/
 out/
 
+# Isolated build-time Python venv (created by CMake in the project root,
+# shared across all build directories)
+tooling_venv/
+
 # CMake generated files
 CMakeCache.txt
 CMakeFiles/
