@@ -17,18 +17,46 @@ if(NOT MSVC AND NOT IS_MINGW_BUILD)
             "  - MinGW-w64 cross-builds on Linux (all forwarding methods):\n"
             "      cmake -B build -DCMAKE_SYSTEM_NAME=Windows \\\n"
             "            -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \\\n"
-            "            -DDLL_TYPE=version.dll \\\n"
-            "            [-DDLL_SOURCE=/path/to/the/system/version.dll]\n"
+            "            -DDLL_SOURCE=/path/to/winmm.dll\n"
             "\n"
             "Current toolchain: ${CMAKE_CXX_COMPILER_ID} targeting "
             "${CMAKE_SYSTEM_NAME} (WIN32=${WIN32}).")
 endif()
 
-# DLL_TYPE parameter: the file name of ANY x64 system DLL to proxy.
-# Pass the DLL file name (e.g. "winmm.dll"); exports are extracted at
-# configure time from the local Windows system files (System32), or from
-# DLL_SOURCE on hosts that cannot read them (Linux cross-builds).
-set(DLL_TYPE "version.dll" CACHE STRING "System DLL file name to proxy (e.g. version.dll, winmm.dll)")
+# DLL_SOURCE parameter: path to the x64 system DLL to extract exports
+# from and to proxy (required). Its file name drives everything: the
+# output DLL name and the module the proxy forwards to at runtime
+# (System32\<name>). This is the ONLY dependency knob - no separate
+# name variable, so the two can never drift apart.
+set(DLL_SOURCE "" CACHE FILEPATH
+    "Path to the x64 system DLL to extract exports from and to proxy (required)")
+if(NOT DLL_SOURCE)
+    message(FATAL_ERROR "DLL_SOURCE is required: pass the path to the x64 system DLL to proxy, e.g.\n"
+                        "  -DDLL_SOURCE=C:\\Windows\\System32\\winmm.dll")
+endif()
+if(NOT EXISTS "${DLL_SOURCE}")
+    message(FATAL_ERROR "DLL_SOURCE '${DLL_SOURCE}' does not exist.")
+endif()
+
+# Derive the DLL identity from the source file name (reject paths first,
+# then require a plain '<name>.dll' file name)
+get_filename_component(DLL_SOURCE_NAME "${DLL_SOURCE}" NAME)
+get_filename_component(DLL_NODIR "${DLL_SOURCE_NAME}" NAME)
+if(NOT DLL_NODIR STREQUAL "${DLL_SOURCE_NAME}")
+    message(FATAL_ERROR "Invalid DLL_SOURCE: '${DLL_SOURCE}'.")
+endif()
+
+get_filename_component(DLL_NAME "${DLL_SOURCE_NAME}" NAME_WLE)
+get_filename_component(DLL_EXT "${DLL_SOURCE_NAME}" LAST_EXT)
+string(TOLOWER "${DLL_EXT}" DLL_EXT)
+
+# Validate the DLL name (target file name + generated files use it)
+if(NOT DLL_NAME MATCHES "^[A-Za-z0-9_]+$" OR NOT DLL_EXT STREQUAL ".dll")
+    message(FATAL_ERROR "Invalid DLL_SOURCE file name: '${DLL_SOURCE_NAME}'. "
+                        "Pass a '<name>.dll' file (letters, digits, underscores only), "
+                        "e.g. winmm.dll.")
+endif()
+set(DLL_FILE_NAME "${DLL_NAME}.dll")
 
 # PROXY_METHOD parameter: linker (default) or runtime
 # - linker: PE-level forwarder exports, no runtime code
@@ -49,35 +77,9 @@ if(PROXY_METHOD STREQUAL "runtime" AND NOT IS_MINGW_BUILD)
     enable_language(ASM_MASM)
 endif()
 
-# Note: Windows' own files are located via GLOBALROOT\SystemRoot, which
-# resolves regardless of the installation drive - the same path the proxy
-# then forwards to at runtime.
-
-# Normalize DLL_TYPE: reject paths first, then strip the ".dll" suffix
-get_filename_component(DLL_NODIR "${DLL_TYPE}" NAME)
-if(NOT DLL_NODIR STREQUAL "${DLL_TYPE}")
-    message(FATAL_ERROR "Invalid DLL_TYPE: '${DLL_TYPE}'. "
-                        "Pass just the DLL file name (e.g. 'winmm.dll'), not a path.")
-endif()
-
-get_filename_component(DLL_NAME "${DLL_TYPE}" NAME_WLE)
-get_filename_component(DLL_EXT "${DLL_TYPE}" LAST_EXT)
-string(TOLOWER "${DLL_EXT}" DLL_EXT)
-
-# Validate the DLL name (target file name + generated headers use it)
-if(NOT DLL_NAME MATCHES "^[A-Za-z0-9_]+$" OR NOT DLL_EXT STREQUAL ".dll")
-    message(FATAL_ERROR "Invalid DLL_TYPE: '${DLL_TYPE}'. "
-                        "Pass just the DLL file name, e.g. 'winmm.dll' "
-                        "(letters, digits and underscores).")
-endif()
-set(DLL_FILE_NAME "${DLL_NAME}.dll")
-
-# DLL_SOURCE parameter: explicit path to the source DLL for export
-# extraction. Required on hosts that cannot read the Windows system
-# files directly (e.g. Linux cross-builds using a local copy); at
-# runtime the proxy still targets the DLL_FILE_NAME system module.
-set(DLL_SOURCE "" CACHE FILEPATH
-    "Explicit source DLL path for export extraction (Linux cross-builds)")
+# Note: at runtime the proxy targets the system module matching the
+# source file name, via GLOBALROOT\SystemRoot - which resolves
+# regardless of the installation drive.
 
 # Python is required for the build-time export extraction
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
@@ -161,30 +163,15 @@ if(PROXY_METHOD STREQUAL "runtime")
     list(APPEND GEN_ARGS --runtime)
 endif()
 
-# Linux cross-builds must be given an explicit local copy of the system DLL;
-# Windows hosts (MSVC) read it straight from System32.
-set(EXTRACT_INPUT "${DLL_FILE_NAME}")
-if(DLL_SOURCE)
-    if(NOT EXISTS "${DLL_SOURCE}")
-        message(FATAL_ERROR "DLL_SOURCE '${DLL_SOURCE}' does not exist.")
-    endif()
-    set(EXTRACT_INPUT "${DLL_SOURCE}")
-endif()
-if(IS_MINGW_BUILD AND NOT DLL_SOURCE)
-    message(FATAL_ERROR "MinGW-w64 cross-builds need the source DLL file explicitly:\n"
-                        "  -DDLL_SOURCE=/path/to/${DLL_FILE_NAME}\n"
-                        "(on Windows MSVC builds it is read from System32 directly).")
-endif()
+set(EXTRACT_INPUT "${DLL_SOURCE}")
 execute_process(
     COMMAND "${EXTRACT_PYTHON}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${GEN_ARGS} -o "${GEN_DIR}"
     RESULT_VARIABLE GEN_RESULT
 )
 if(NOT GEN_RESULT EQUAL 0)
-    message(FATAL_ERROR "Failed to extract exports of '${DLL_FILE_NAME}'.\n"
+    message(FATAL_ERROR "Failed to extract exports of '${DLL_SOURCE}'.\n"
                         "Hints:\n"
-                        "  - Make sure the DLL name is spelled correctly (e.g. 'winmm.dll', not 'winnm.dll').\n"
-                        "  - The DLL must be an x64 file inside System32 (Windows MSVC hosts)\n"
-                        "    or inside DLL_SOURCE (Linux cross-builds).\n"
+                        "  - The DLL file must be an x64 (AMD64) PE with an export directory.\n"
                         "  - CMake installs pefile into an isolated build-tree venv automatically\n"
                         "    (${EXTRACT_PYTHON}); try it manually to see the full error.\n"
                         "  - Try manually: ${EXTRACT_PYTHON} tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
@@ -209,7 +196,7 @@ else()
 endif()
 
 # Publish generated files under fixed include names so main.cpp needs no
-# per-DLL branching; this is what makes DLL_TYPE fully dynamic.
+# per-DLL branching; this is what makes DLL_SOURCE fully dynamic.
 set(GEN_DEF "${GEN_DIR}/proxy_exports.def")
 if(IS_MINGW_BUILD)
     configure_file("${GEN_DEFSRC}" "${GEN_DEF}" COPYONLY)
@@ -233,8 +220,15 @@ if(PROXY_METHOD STREQUAL "runtime")
         endif()
         list(APPEND PROXY_SOURCES "${ASM_SOURCE}")
     endif()
-    # MinGW: thunks are GNU naked stubs inside the runtime header itself
 endif()
+
+# Drop the per-DLL originals: only the fixed names are consumed downstream,
+# so build/exports/ never holds duplicate files. The MSVC .asm is kept -
+# it is a compile input, not a published artifact.
+file(REMOVE "${GEN_DIR}/${DLL_NAME}.def"
+            "${GEN_DIR}/${DLL_NAME}.h"
+            "${GEN_DIR}/${DLL_NAME}_runtime.def"
+            "${GEN_DIR}/${DLL_NAME}_runtime.h")
 
 # Create shared library (DLL)
 add_library(${DLL_NAME} SHARED ${PROXY_SOURCES})

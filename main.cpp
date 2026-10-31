@@ -5,10 +5,9 @@
 //
 // The forwarding files are generated at CMake configure time
 // by tools/extract_exports.py, which extracts the exports
-// of the requested system DLL (see DLL_TYPE) directly from the local
-// Windows system files. Their outputs are published under fixed
-// names in the build tree ("exports/proxy_exports*"), so this file
-// never needs changes when a new DLL type is used.
+// of the DLL passed via DLL_SOURCE. Their outputs are published
+// under fixed names in the build tree ("exports/proxy_exports*"),
+// so this file never needs changes when a new DLL type is used.
 // ============================================================
 #ifdef PROXY_RUNTIME
     // Runtime forwarding: LoadLibrary + GetProcAddress + thunks

@@ -62,6 +62,8 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
 - **Python**: 3.8+ (CMake provisions `pefile` in an isolated build-tree venv
   automatically - it never touches your system or global Python)
 - **Target**: Windows x64 only
+- **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
+  (the proxy is named after it)
 
 ### Linux (MinGW-w64 cross-build)
 
@@ -71,21 +73,22 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
   - Fedora: `sudo dnf install mingw64-gcc`
 - **Build**: CMake 3.15+ and make (or Ninja)
 - **Python**: 3.8+ (same isolated-venv rule as on Windows)
-- **Source DLL**: an x64 copy of the system DLL being proxied, passed via `DLL_SOURCE`
+- **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
+  (the proxy is named after it)
 
 ### Windows (Local Build)
 
 ```bash
 # Linker forwarding (default, simple)
-cmake -B build -DDLL_TYPE=version.dll
+cmake -B build -DDLL_SOURCE=C:\Windows\System32\version.dll
 cmake --build build --config Release
 
 # Runtime forwarding (maximum compatibility)
-cmake -B build -DDLL_TYPE=winmm.dll -DPROXY_METHOD=runtime
+cmake -B build -DDLL_SOURCE=C:\Windows\System32\winmm.dll -DPROXY_METHOD=runtime
 cmake --build build --config Release
 ```
 
-Output: `build/Release/<dll_type>.dll`
+Output: `build/Release/<dll_source_name>.dll`
 
 ### Linux (MinGW-w64 Cross-Build, no Windows needed)
 
@@ -95,20 +98,18 @@ Build directly on your machine using the cross-toolchain:
 # Linker forwarding (default, simple) - exports go through a generated .def file
 cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
       -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-      -DDLL_TYPE=version.dll \
       -DDLL_SOURCE=/path/to/version.dll
 cmake --build build
 
 # Runtime forwarding (maximum compatibility)
 cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
       -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-      -DDLL_TYPE=winmm.dll \
-      -DPROXY_METHOD=runtime \
-      -DDLL_SOURCE=/path/to/winmm.dll
+      -DDLL_SOURCE=/path/to/winmm.dll \
+      -DPROXY_METHOD=runtime
 cmake --build build
 ```
 
-Output: `build/<dll_type>.dll`
+Output: `build/<dll_source_name>.dll`
 
 ## Usage
 

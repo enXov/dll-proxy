@@ -3,9 +3,10 @@
 DLL Export Extractor for dll-proxy
 
 Extracts function exports from a Windows DLL and generates C/C++ header files
-with export forwarding directives. By default, the source DLL is pulled
-directly from the **local Windows system files** (System32) - the exact same
-location the proxy forwards to at runtime (GLOBALROOT\\SystemRoot\\System32).
+with export forwarding directives. The source is an explicit DLL file path -
+that file is the only thing that determines the export set, so builds are
+reproducible across machines. At runtime the proxy still targets the real
+system module (GLOBALROOT\\SystemRoot\\System32\\<name>).
 
 Supports THREE output forms:
   - Linker forwarding (default): MSVC pragma headers (simple, fast)
@@ -13,14 +14,13 @@ Supports THREE output forms:
   - Runtime forwarding (--runtime): LoadLibrary + GetProcAddress + thunks
 
 Usage:
-    python extract_exports.py winmm.dll      # from the system files (System32)
-    python extract_exports.py <path>/to/dll  # from an explicit DLL file
-    python extract_exports.py winmm.dll --runtime  # also generate runtime files
-    python extract_exports.py winmm.dll --def      # GNU ld .def (MinGW-w64)
+    python extract_exports.py C:\\Windows\\System32\\winmm.dll
+    python extract_exports.py /path/to/winmm.dll --runtime
+    python extract_exports.py /path/to/winmm.dll --def      # GNU ld .def
 
 Requirements:
     - pefile (pip install pefile)
-    - Run on Windows for system file sourcing (any OS works with explicit paths)
+    - Works on any OS (input is an explicit file path)
 """
 
 import os
@@ -54,9 +54,7 @@ def extract_exports(dll_path):
     try:
         pe = pefile.PE(dll_path)
         
-        # Reject non-x64 DLLs early (project is x64-only). This also catches
-        # 32-bit-Python-on-x64-Windows cases where System32 resolves to
-        # SysWOW64 through WOW64 file-system redirection.
+        # Reject non-x64 DLLs early (project is x64-only)
         machine = pe.FILE_HEADER.Machine
         if machine != 0x8664:  # IMAGE_FILE_MACHINE_AMD64
             print(f"Error: '{dll_path}' is not an x64 (AMD64) DLL "
@@ -94,59 +92,21 @@ def extract_exports(dll_path):
 
 def resolve_dll_source(arg):
     """
-    Resolve the user's DLL input to an actual file path.
+    Resolve the DLL input to an actual file path.
 
-    Accepts:
-      1. An existing file path (absolute or relative) - used as-is.
-      2. A system DLL file name ("winmm.dll") - resolved against the local
-         Windows system files via GLOBALROOT\\SystemRoot, the same location
-         the proxy forwards to at runtime.
+    The input must be an explicit DLL file path (absolute or
+    CWD-relative). That file is the single source of truth for the
+    export set, and its file name is what the proxy stands in for at
+    runtime (System32\\<name>).
 
     Returns a Path, or None on failure (with the reason printed).
     """
-    # 1. As given (CWD-relative or absolute)
     candidate = Path(arg)
     if candidate.is_file():
         return str(candidate)
 
-    # 2. Next to the script (convenient for manual runs with local copies)
-    script_local = Path(__file__).parent / arg
-    if script_local.is_file():
-        return str(script_local)
-
-    # 3. Windows system files (via the NT path). GLOBALROOT\SystemRoot
-    #    resolves regardless of the installation drive (C:, D:, ...) and
-    #    matches the path used by linker-method export forwarding.
-    #    NOTE: built as plain strings; pathlib mangles device prefixes
-    #    like \\.\GLOBALROOT (drops the SystemRoot component).
-    name = os.path.basename(str(arg).replace('\\', '/')).lower()
-    if not name.endswith('.dll'):
-        print(f"Error: '{name}' does not end with '.dll'. "
-              "Pass the system DLL file name, e.g. 'winmm.dll'.")
-        return None
-    stem = name[:-len('.dll')]
-    if not re.fullmatch(r'[A-Za-z0-9_]+', stem):
-        print(f"Error: '{name}' is an invalid DLL file name "
-              "(letters, digits, underscore only).")
-        return None
-
-    system_root = os.environ.get('SystemRoot', r'C:\Windows')
-    system_path = (r'\\.\GLOBALROOT\SystemRoot\System32' + '\\' + name)
-    if os.path.isfile(system_path):
-        return system_path
-
-    # Safety net: plain Win32 path (e.g. C:\Windows\System32\name.dll)
-    win32_path = os.path.join(system_root, 'System32', name)
-    if os.path.isfile(win32_path):
-        return win32_path
-
-    print(f"Error: Could not resolve '{arg}' to a DLL file.")
-    print("Tried:")
-    print(f"  - {candidate}          (as given)")
-    print(f"  - {script_local}  (next to the script)")
-    print(f"  - {system_path}  (Windows system files)")
-    print("\nNote: system-file sourcing needs a Windows machine. On other\n"
-          "systems pass an explicit x64 copy of the DLL.\n")
+    print(f"Error: '{arg}' is not an existing DLL file.")
+    print("Pass the path to the DLL file you want to proxy.")
     return None
 
 
@@ -813,23 +773,20 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
 
         if verbose:
             print(f"✓ Runtime header generated: {rt_header_path} (GNU thunks inside)")
-            print(f"✓ Runtime export def:       {rt_def_path}")
-            print("✓ MinGW-w64 local runtime build:\n"
+            print("✓ Local build:\n"
                   "    cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows "
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
-                  f"-DDLL_TYPE={dll_name} -DPROXY_METHOD=runtime "
-                  "[-DDLL_SOURCE=/path/to/copy/of/the/system/dll]")
+                  f"-DDLL_SOURCE=/path/to/{dll_name} -DPROXY_METHOD=runtime")
     elif def_out:
         def_content = generate_def(dll_name, exports, use_ordinals)
         def_path = save_def(dll_name, def_content, output_dir)
 
         if verbose:
             print(f"✓ GNU ld def generated:    {def_path}")
-            print("✓ MinGW-w64 local build:\n"
+            print("✓ Local build:\n"
                   "    cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows "
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
-                  f"-DDLL_TYPE={dll_name} "
-                  "[-DDLL_SOURCE=/path/to/copy/of/the/system/dll]")
+                  f"-DDLL_SOURCE=/path/to/{dll_name}")
     else:
         header_content = generate_header(dll_name, exports, use_ordinals)
         header_path = save_header(dll_name, header_content, output_dir)
@@ -850,8 +807,8 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True, runti
                 print(f"✓ Runtime ASM generated:    {rt_asm_path}")
 
     if verbose and not def_out:
-        method_info = " (linker + runtime)" if runtime else ""
-        print(f"✓ Ready to use in CMake with -DDLL_TYPE={dll_name.replace('.dll', '')}{method_info}\n")
+        method_info = " -DPROXY_METHOD=runtime" if runtime else ""
+        print(f"✓ Ready to use in CMake with -DDLL_SOURCE=<path to {dll_name}>{method_info}\n")
 
     return True
 
@@ -879,12 +836,13 @@ Examples:
   python extract_exports.py winmm.dll -o /path/to/output
 
 Usage from CMake (generation runs automatically at configure time):
-  cmake -B build -DDLL_TYPE=winmm.dll -DPROXY_METHOD=runtime
+  cmake -B build -DDLL_SOURCE=C:\\Windows\\System32\\winmm.dll
   cmake --build build --config Release
 
   # MinGW-w64 cross-build on Linux (see the repo README for the full flags)
-  cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows \
-        -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ -DDLL_TYPE=winmm.dll
+  cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows \\
+        -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \\
+        -DDLL_SOURCE=/path/to/winmm.dll
 """
     )
     
