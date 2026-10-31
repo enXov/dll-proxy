@@ -11,8 +11,7 @@
 // never needs changes when a new DLL type is used.
 // ============================================================
 #ifdef PROXY_RUNTIME
-    // Runtime forwarding: LoadLibrary + GetProcAddress + ASM thunks
-    // Compatible with ALL applications including complex game engines
+    // Runtime forwarding: LoadLibrary + GetProcAddress + thunks
     #include "exports/proxy_exports_runtime.h"
 #elif defined(_MSC_VER)
     // Linker forwarding: MSVC pragma directives (default)

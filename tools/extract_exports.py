@@ -10,8 +10,7 @@ location the proxy forwards to at runtime (GLOBALROOT\\SystemRoot\\System32).
 Supports THREE output forms:
   - Linker forwarding (default): MSVC pragma headers (simple, fast)
   - GNU ld forwarding (--def): .def forwarding file for MinGW-w64 builds
-  - Runtime forwarding (--runtime): LoadLibrary + GetProcAddress + ASM thunks
-    Required for complex applications and game engines.
+  - Runtime forwarding (--runtime): LoadLibrary + GetProcAddress + thunks
 
 Usage:
     python extract_exports.py winmm.dll      # from the system files (System32)
@@ -364,7 +363,8 @@ def generate_runtime_header(dll_name, exports):
     builds use the GNU naked stubs inside this header plus a generated
     <name>_runtime.def export mapping.
 
-    This method is compatible with ALL applications including complex game engines.
+    This method resolves exports at runtime, under our own control,
+    instead of leaving it to the PE loader.
     
     Args:
         dll_name: Name of the DLL (e.g., "winmm.dll")
@@ -408,9 +408,8 @@ def generate_runtime_header(dll_name, exports):
  * Method: Runtime forwarding (LoadLibrary + GetProcAddress + jump thunks)
  * Architecture: x64 only
  *
- * This approach is compatible with ALL applications including complex game engines.
  * Unlike linker forwarding, exports are resolved at runtime under our
- * control, avoiding PE loader conflicts with complex game engines.
+ * own control instead of by the PE loader.
  *
  * Thunks: {short_name}_runtime.asm (MASM, MSVC builds) or the GNU naked
  * stubs inside this header (MinGW-w64 builds). Exported names map to
@@ -561,11 +560,11 @@ def generate_runtime_asm(dll_name, exports):
     """
     Generate MASM x64 assembly file with jump thunks for runtime forwarding.
     Each thunk is a simple indirect JMP through a function pointer.
-    
+
     Args:
         dll_name: Name of the DLL (e.g., "winmm.dll")
         exports: List of tuples (function_name, ordinal)
-    
+
     Returns:
         String containing the ASM file content
     """

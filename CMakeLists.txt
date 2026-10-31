@@ -34,7 +34,6 @@ set(DLL_TYPE "version.dll" CACHE STRING "System DLL file name to proxy (e.g. ver
 # - linker: PE-level forwarder exports, no runtime code
 #   (MSVC: #pragma comment(linker, ...) / MinGW: generated .def file)
 # - runtime: LoadLibrary + GetProcAddress + jump thunks
-#   (required for complex applications/game engines)
 set(PROXY_METHOD "linker" CACHE STRING "Export forwarding method (linker or runtime)")
 set_property(CACHE PROXY_METHOD PROPERTY STRINGS linker runtime)
 
