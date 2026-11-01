@@ -23,39 +23,58 @@ if(NOT MSVC AND NOT IS_MINGW_BUILD)
             "${CMAKE_SYSTEM_NAME} (WIN32=${WIN32}).")
 endif()
 
-# DLL_SOURCE parameter: path to the x64 system DLL to extract exports
-# from and to proxy (required). Its file name drives everything: the
-# output DLL name and the module the proxy forwards to at runtime
-# (System32\<name>). This is the ONLY dependency knob - no separate
-# name variable, so the two can never drift apart.
-set(DLL_SOURCE "" CACHE FILEPATH
-    "Path to the x64 system DLL to extract exports from and to proxy (required)")
+# DLL_SOURCE parameter: path(s) to the x64 system DLL(s) to proxy.
+# Single value = one proxy (the common case). Multiple values, separated
+# by ';' (CMake list form - repeated -D flags would keep only the last
+# one), combine several modules into one proxy: the FIRST entry drives
+# the identity (output file name + default forward target) and each
+# following entry merges its exports, forwarded to its own module.
+#   -DDLL_SOURCE="C:\\Windows\\System32\\winmm.dll;C:\\Windows\\System32\\version.dll"
+# Combined builds serve name-based imports only - see ORDINAL POLICY in
+# the extractor output and the README.
+set(DLL_SOURCE "" CACHE STRING
+    "Path(s) to x64 DLL(s) to proxy; ';'-separated to combine modules (required)")
 if(NOT DLL_SOURCE)
-    message(FATAL_ERROR "DLL_SOURCE is required: pass the path to the x64 system DLL to proxy, e.g.\n"
-                        "  -DDLL_SOURCE=C:\\Windows\\System32\\winmm.dll")
+    message(FATAL_ERROR "DLL_SOURCE is required: pass the path(s) to the x64 system DLL(s) to proxy, e.g.\n"
+                        "  -DDLL_SOURCE=C:\\Windows\\System32\\winmm.dll\n"
+                        "  -DDLL_SOURCE=\"C:\\Windows\\System32\\winmm.dll;C:\\Windows\\System32\\version.dll\"")
 endif()
-if(NOT EXISTS "${DLL_SOURCE}")
-    message(FATAL_ERROR "DLL_SOURCE '${DLL_SOURCE}' does not exist.")
+list(LENGTH DLL_SOURCE SOURCE_COUNT)
+
+# Validate every entry: the file must exist and be a plain '<name>.dll'
+# file name (letters, digits, underscores). The FIRST entry later drives
+# the proxy identity.
+set(SOURCE_NAMES "")
+foreach(SRC IN LISTS DLL_SOURCE)
+    if(NOT EXISTS "${SRC}")
+        message(FATAL_ERROR "DLL_SOURCE entry '${SRC}' does not exist.")
+    endif()
+    get_filename_component(SRC_NAME "${SRC}" NAME)
+    get_filename_component(SRC_NODIR "${SRC_NAME}" NAME)
+    if(NOT SRC_NODIR STREQUAL "${SRC_NAME}")
+        message(FATAL_ERROR "Invalid DLL_SOURCE entry: '${SRC}'. Pass file paths, not something else.")
+    endif()
+    get_filename_component(SRC_STEM "${SRC_NAME}" NAME_WLE)
+    get_filename_component(SRC_EXT "${SRC_NAME}" LAST_EXT)
+    string(TOLOWER "${SRC_EXT}" SRC_EXT)
+    if(NOT SRC_STEM MATCHES "^[A-Za-z0-9_]+$" OR NOT SRC_EXT STREQUAL ".dll")
+        message(FATAL_ERROR "Invalid DLL_SOURCE file name: '${SRC_NAME}'. "
+                            "Pass a '<name>.dll' file (letters, digits, underscores only), "
+                            "e.g. winmm.dll.")
+    endif()
+    list(APPEND SOURCE_NAMES "${SRC_NAME}")
+endforeach()
+list(REMOVE_DUPLICATES SOURCE_NAMES)
+list(LENGTH SOURCE_NAMES UNIQUE_NAME_COUNT)
+if(NOT UNIQUE_NAME_COUNT EQUAL SOURCE_COUNT)
+    message(FATAL_ERROR "DLL_SOURCE has duplicate module names. Each entry must be a different DLL.")
 endif()
 
-# Derive the DLL identity from the source file name (reject paths first,
-# then require a plain '<name>.dll' file name)
-get_filename_component(DLL_SOURCE_NAME "${DLL_SOURCE}" NAME)
-get_filename_component(DLL_NODIR "${DLL_SOURCE_NAME}" NAME)
-if(NOT DLL_NODIR STREQUAL "${DLL_SOURCE_NAME}")
-    message(FATAL_ERROR "Invalid DLL_SOURCE: '${DLL_SOURCE}'.")
-endif()
-
+# Identity: the first source's file name drives the output DLL name and
+# (unless FORWARD_TARGET_PATH overrides) the module it forwards to.
+list(GET DLL_SOURCE 0 FIRST_SOURCE)
+get_filename_component(DLL_SOURCE_NAME "${FIRST_SOURCE}" NAME)
 get_filename_component(DLL_NAME "${DLL_SOURCE_NAME}" NAME_WLE)
-get_filename_component(DLL_EXT "${DLL_SOURCE_NAME}" LAST_EXT)
-string(TOLOWER "${DLL_EXT}" DLL_EXT)
-
-# Validate the DLL name (target file name + generated files use it)
-if(NOT DLL_NAME MATCHES "^[A-Za-z0-9_]+$" OR NOT DLL_EXT STREQUAL ".dll")
-    message(FATAL_ERROR "Invalid DLL_SOURCE file name: '${DLL_SOURCE_NAME}'. "
-                        "Pass a '<name>.dll' file (letters, digits, underscores only), "
-                        "e.g. winmm.dll.")
-endif()
 set(DLL_FILE_NAME "${DLL_NAME}.dll")
 
 # PROXY_METHOD parameter: linker (default) or runtime
@@ -193,18 +212,29 @@ if(FORWARD_TARGET_PATH)
     list(APPEND GEN_ARGS --target "${FORWARD_TARGET_PATH}")
 endif()
 
-set(EXTRACT_INPUT "${DLL_SOURCE}")
+# Identity source is the positional argument; every additional source is
+# passed as a repeated --source flag (its exports are merged into the same
+# export table, forwarded to its own module).
+set(EXTRACT_INPUT "${FIRST_SOURCE}")
+set(EXTRA_SOURCE_ARGS "")
+if(SOURCE_COUNT GREATER 1)
+    foreach(SRC IN LISTS DLL_SOURCE)
+        if(NOT SRC STREQUAL "${FIRST_SOURCE}")
+            list(APPEND EXTRA_SOURCE_ARGS --source "${SRC}")
+        endif()
+    endforeach()
+endif()
 execute_process(
-    COMMAND "${EXTRACT_PYTHON}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${GEN_ARGS} -o "${GEN_DIR}"
+    COMMAND "${EXTRACT_PYTHON}" "${EXTRACT_SCRIPT}" "${EXTRACT_INPUT}" ${EXTRA_SOURCE_ARGS} ${GEN_ARGS} -o "${GEN_DIR}"
     RESULT_VARIABLE GEN_RESULT
 )
 if(NOT GEN_RESULT EQUAL 0)
     message(FATAL_ERROR "Failed to extract exports of '${DLL_SOURCE}'.\n"
                         "Hints:\n"
-                        "  - The DLL file must be an x64 (AMD64) PE with an export directory.\n"
+                        "  - Every DLL file must be an x64 (AMD64) PE with an export directory.\n"
                         "  - CMake provisions pefile in the project's tooling_venv automatically\n"
                         "    (${EXTRACT_PYTHON}); try it manually to see the full error.\n"
-                        "  - Try manually: ${EXTRACT_PYTHON} tools/extract_exports.py ${EXTRACT_INPUT} ${GEN_ARGS}")
+                        "  - Try manually: ${EXTRACT_PYTHON} tools/extract_exports.py ${EXTRACT_INPUT} ${EXTRA_SOURCE_ARGS} ${GEN_ARGS}")
 endif()
 
 # Verify the output file exists (paranoia before it enters the build)

@@ -18,6 +18,11 @@ Usage:
     python extract_exports.py /path/to/winmm.dll --runtime
     python extract_exports.py /path/to/winmm.dll --def      # GNU ld .def
 
+    # Combine several modules into one proxy: the first file is the
+    # identity; every --source entry is merged name-only and forwarded
+    # to its own module.
+    python extract_exports.py winmm.dll --source version.dll
+
 Requirements:
     - pefile (pip install pefile)
     - Works on any OS (input is an explicit file path)
@@ -28,6 +33,12 @@ import re
 import sys
 import argparse
 from pathlib import Path
+
+# Exported functions that carry the PRIVATE flag (COM registration entry points)
+COM_FUNCTIONS = {
+    'DllCanUnloadNow', 'DllGetClassObject', 'DllInstall',
+    'DllRegisterServer', 'DllUnregisterServer'
+}
 
 try:
     import pefile
@@ -112,290 +123,298 @@ def resolve_dll_source(arg):
 
 def forward_targets(dll_name, target_module=None):
     """
-    Compute the module a proxy forwards its exports to.
+    Compute the descriptor of the module a proxy forwards its exports to.
 
     Default: the Windows system module via the GLOBALROOT NT path, which
     resolves regardless of the installation drive - the same module the
-    proxy impersonates. This works for kernel/loader forwarder strings,
-    not as a runtime LoadLibrary path.
+    proxy impersonates. GLOBALROOT is valid as a LOADER forwarder string
+    only, so the runtime method loads the module from the system
+    directory by name instead (hence 'load_name').
 
     target_module: any module string a forwarder may legally reference -
     a plain module name (resolved through the loading application's
     directory first, the classic same-folder hijack) or an absolute path.
     It must NOT be the proxy's own name (that would forward to itself).
 
-    Returns: (natural, c_escaped) - the raw string, and the same string
-    with backslashes doubled for embedding in a C string literal.
+    Returns dict:
+        forward    - the module string for forwarder exports
+        forward_c  - the same string, backslashes doubled for C literals
+        load_direct- string to pass to LoadLibraryA() at runtime, or None
+        load_name  - module name to load from the system directory, or None
     """
     if target_module:
         natural = str(target_module)
-    else:
-        natural = rf"\\.\GLOBALROOT\SystemRoot\System32\{dll_name}"
-    return natural, natural.replace('\\', '\\\\')
+        return {
+            'forward': natural,
+            'forward_c': natural.replace('\\', '\\\\'),
+            'load_direct': natural,
+            'load_name': None,
+        }
+    natural = rf"\\.\GLOBALROOT\SystemRoot\System32\{dll_name}"
+    return {
+        'forward': natural,
+        'forward_c': natural.replace('\\', '\\\\'),
+        'load_direct': None,
+        'load_name': dll_name,
+    }
 
 
-def generate_header(dll_name, exports, use_ordinals=True, target_module=None):
+def collect_exports(sources, verbose=False):
+    """
+    Extract and merge exports from one or more source DLLs.
+
+    sources: list of (dll_path, target_module) pairs. The FIRST entry is
+    the identity source: it keeps its original ordinals, its COM
+    (PRIVATE) flags and its ordinal-only (NONAME) exports. Following
+    entries are merged name-only: an additional module cannot keep
+    original ordinals in the same export table (the ordinal spaces
+    collide), and its NONAME exports cannot be represented without a
+    name - both are reported as warnings.
+
+    Returns:
+        (entries, warnings) - entries is a list of dicts:
+            {'name', 'ordinal' (None = auto), 'private', 'tgt' (descriptor)}
+        or (None, None) if any source failed.
+    """
+    entries = []
+    warnings = []
+    seen_names = set()
+    for idx, (path, target_module) in enumerate(sources):
+        dll_name = os.path.basename(str(path)).lower()
+        exports = extract_exports(path)
+        if exports is None:
+            return None, None
+        if verbose:
+            print(f"  source {idx}: {path} ({len(exports)} exports)")
+        tgt = forward_targets(dll_name, target_module)
+
+        for func_name, ordinal in exports:
+            if func_name is None:
+                if idx == 0:
+                    entries.append({'name': None, 'ordinal': ordinal,
+                                    'private': False, 'tgt': tgt})
+                else:
+                    warnings.append(
+                        f"  dropped ordinal-only export #{ordinal} of '{dll_name}' "
+                        "(another module's NONAME ordinals cannot be represented)")
+
+                continue
+            if func_name in seen_names:
+                warnings.append(
+                    f"  skipped duplicate export '{func_name}' from '{dll_name}' "
+                    "(same name already exported from an earlier source)")
+                continue
+            seen_names.add(func_name)
+            entries.append({
+                'name': func_name,
+                # only the identity source keeps its original ordinals
+                'ordinal': ordinal if idx == 0 else None,
+                'private': func_name in COM_FUNCTIONS,
+                'tgt': tgt,
+            })
+
+    if verbose:
+        for w in warnings:
+            print(w)
+        if any(e['ordinal'] is None for e in entries):
+            print("  ordinal policy: identity source pinned, extra sources name-only")
+
+    return entries, warnings
+
+
+def generate_header(dll_name, entries, use_ordinals=True):
     """
     Generate C/C++ header file with MSVC pragma export forwarding (linker method).
-    Uses GLOBALROOT path inspired by Perfect DLL Proxy for maximum compatibility.
-    Uses macro-based approach for cleaner, more maintainable code.
-    Handles three export types: regular, COM/PRIVATE, and ordinal-only.
-    
+
+    entries: list of dicts as built by collect_exports(), each carrying
+        'name', 'ordinal' (None = auto-assigned by the linker), 'target'
+        (module the export forwards to) and 'private' (COM flag). The
+        first source keeps its original ordinals and NONAME exports;
+        additional sources are name-only (see collect_exports).
+
     Args:
-        dll_name: Name of the DLL (e.g., "version.dll")
-        exports: List of tuples (function_name, ordinal)
-        use_ordinals: Include ordinals in exports (default: True, recommended)
-    
+        dll_name: Name of the proxy DLL (identity, e.g. "version.dll")
+        entries: Forwarder entries
+        use_ordinals: Pin ordinals where available (default: True)
+
     Returns:
         String containing the header file content
     """
     base_name = dll_name.replace('.dll', '').upper()
 
-    # Module the exports forward to (GLOBALROOT system path by default,
-    # or a custom target such as the renamed original for private DLLs)
-    original_path_c = forward_targets(dll_name, target_module)[1]
-    path_display = forward_targets(dll_name, target_module)[0]
-    
-    # COM functions that need PRIVATE flag (like Perfect DLL Proxy)
-    com_functions = {
-        'DllCanUnloadNow',
-        'DllGetClassObject', 
-        'DllInstall',
-        'DllRegisterServer',
-        'DllUnregisterServer'
-    }
-    
-    # Categorize exports
-    regular_exports = []
-    private_exports = []
-    ordinal_only_exports = []
-    
-    for func_name, ordinal in exports:
-        if func_name is None:
-            # Ordinal-only export (no name)
-            ordinal_only_exports.append(ordinal)
-        elif func_name in com_functions:
-            # COM export needs PRIVATE flag
-            private_exports.append((func_name, ordinal))
-        else:
-            # Regular named export
-            regular_exports.append((func_name, ordinal))
-    
-    # Count export types
-    ordinal_status = "with ordinals" if use_ordinals else "without ordinals"
-    export_summary = f"Total Exports: {len(exports)} ({ordinal_status})"
-    if private_exports:
-        export_summary += f" - {len(regular_exports)} regular, {len(private_exports)} COM/PRIVATE"
-        if ordinal_only_exports:
-            export_summary += f", {len(ordinal_only_exports)} ordinal-only"
-    elif ordinal_only_exports:
-        export_summary += f" - {len(regular_exports)} regular, {len(ordinal_only_exports)} ordinal-only"
-    
+    # Group the entries per forward target, preserving first-seen order
+    targets = []
+    for e in entries:
+        if e['tgt']['forward'] not in targets:
+            targets.append(e['tgt']['forward'])
+
+    auto = any(e['ordinal'] is None for e in entries)
+    noname = any(e['name'] is None for e in entries)
+    total = len(entries)
+
+    summary = (f"Total Exports: {total} across {len(targets)} target module(s)")
+    if auto:
+        summary += " (extra sources are name-only: auto ordinals)"
+    if use_ordinals:
+        summary += ", ordinals pinned where available"
+    else:
+        summary += ", ordinals off (--no-ordinals)"
+
     header = f"""#pragma once
 /*
  * Auto-generated export forwarding header for {dll_name}
  * Generated by extract_exports.py
  * Inspired by Perfect DLL Proxy (https://github.com/mrexodia/perfect-dll-proxy)
- * 
- * {export_summary}
- * Original DLL Path: {path_display}
+ *
+ * {summary}
  * Architecture: x64 only
- * 
+ *
  * Usage:
  *   #include "exports/{dll_name.replace('.dll', '')}.h"
- * 
- * This header uses MSVC #pragma directives to forward all exports
- * to the original module without manual function implementation.
+ *
+ * MSVC #pragma directives forward every export to its target module.
  */
 
 #ifndef {base_name}_EXPORTS_H
 #define {base_name}_EXPORTS_H
 
-// Module the exports forward to (GLOBALROOT system path by default)
-#define ORIGINAL_DLL "{original_path_c}"
+"""
+    # Per-target module paths and pragma macros
+    for idx, target in enumerate(targets):
+        c_path = target.replace('\\', '\\\\')
+        header += f"// Forward target {idx}: {target}\n"
+        header += f'#define ORIGINAL_DLL_{idx} "{c_path}"\n\n'
+        header += f"""#define MAKE_EXPORT_{idx}(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL_{idx} "." #name ",@" #ordinal))
 
-// Export forwarding macros (like Perfect DLL Proxy)
+#define MAKE_EXPORT_AUTO_{idx}(name) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL_{idx} "." #name))
+
+#define MAKE_EXPORT_PRIVATE_{idx}(name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL_{idx} "." #name ",@" #ordinal ",PRIVATE"))
+
+#define MAKE_EXPORT_PRIVATE_AUTO_{idx}(name) \
+    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL_{idx} "." #name ",PRIVATE"))
+
+#define MAKE_EXPORT_ORDINAL_{idx}(proxy_name, ordinal) \
+    __pragma(comment(linker, "/EXPORT:" #proxy_name "=" ORIGINAL_DLL_{idx} ".#" #ordinal ",@" #ordinal ",NONAME"))
 
 """
-    
-    # Add appropriate macros based on use_ordinals setting
-    if use_ordinals:
-        header += """// Regular export: Named function with ordinal
-#define MAKE_EXPORT(name, ordinal) \\
-    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal))
+    # The export lines, grouped per target, preserving the entry order
+    for idx, target in enumerate(targets):
+        header += f"// Exports -> {target}\n"
+        for e in entries:
+            if e['tgt']['forward'] != target:
+                continue
+            if e['name'] is None:
+                header += f"MAKE_EXPORT_ORDINAL_{idx}(__proxy{e['ordinal']}, {e['ordinal']})\n"
+                continue
+            pinned = use_ordinals and e['ordinal'] is not None
+            if e['private']:
+                header += (f"MAKE_EXPORT_PRIVATE_{idx}({e['name']}, {e['ordinal']})\n"
+                           if pinned else f"MAKE_EXPORT_PRIVATE_AUTO_{idx}({e['name']})\n")
+            else:
+                header += (f"MAKE_EXPORT_{idx}({e['name']}, {e['ordinal']})\n"
+                           if pinned else f"MAKE_EXPORT_AUTO_{idx}({e['name']})\n")
+        header += "\n"
 
-// COM export: Named function with PRIVATE flag (not in import library)
-#define MAKE_EXPORT_PRIVATE(name, ordinal) \\
-    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",@" #ordinal ",PRIVATE"))
-
-// Ordinal-only export: No name, only ordinal number with NONAME flag
-#define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \\
-    __pragma(comment(linker, "/EXPORT:" #proxy_name "=" ORIGINAL_DLL ".#" #ordinal ",@" #ordinal ",NONAME"))
-
-"""
-    else:
-        header += """// Regular export: Named function without ordinal (auto-assigned by linker)
-#define MAKE_EXPORT(name, ordinal) \\
-    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name))
-
-// COM export: Named function with PRIVATE flag, no ordinal
-#define MAKE_EXPORT_PRIVATE(name, ordinal) \\
-    __pragma(comment(linker, "/EXPORT:" #name "=" ORIGINAL_DLL "." #name ",PRIVATE"))
-
-// Ordinal-only export: Cannot be used without ordinals - skipped
-#define MAKE_EXPORT_ORDINAL(proxy_name, ordinal) \\
-    /* Ordinal-only exports require ordinals - this export is skipped */
-
-"""
-    
-    # Add regular exports
-    if regular_exports:
-        header += "// Regular exports\n"
-        for func_name, ordinal in regular_exports:
-            header += f'MAKE_EXPORT({func_name}, {ordinal})\n'
-    
-    # Add COM/PRIVATE exports
-    if private_exports:
-        header += "\n// COM exports (PRIVATE flag)\n"
-        for func_name, ordinal in private_exports:
-            header += f'MAKE_EXPORT_PRIVATE({func_name}, {ordinal})\n'
-    
-    # Add ordinal-only exports
-    if ordinal_only_exports:
-        header += "\n// Ordinal-only exports (NONAME flag)\n"
-        for ordinal in ordinal_only_exports:
-            header += f'MAKE_EXPORT_ORDINAL(__proxy{ordinal}, {ordinal})\n'
-    
     header += f"""
 #endif // {base_name}_EXPORTS_H
 """
-    
+
     return header
 
 
-def generate_def(dll_name, exports, use_ordinals=True, target_module=None):
+def generate_def(dll_name, entries, use_ordinals=True):
     """
     Generate a GNU ld .def forwarding file (for MinGW-w64 builds).
 
-    Forwarder entries use the exact same module path as the MSVC pragma
-    output. binutils ld parses .def files natively for PE targets:
-
-      - ld/deffilep.y: export lines accept quoted names and the
-        "NAME = MODULE-NAME.EXTERNAL-NAME" forwarder form
-      - ld/pe-dll.c: any dotted internal name is flagged as a forwarder
-        and the string is stored verbatim in the PE export table
-
-    Quoting the path is what makes the dotted GLOBALROOT path work in
-    .def files (link.exe cannot parse those; binutils can).
-
-    Handles the same three export categories as the pragma header:
-    regular (with ordinal), COM/PRIVATE, and ordinal-only (NONAME,
-    forwarded by ordinal): "#N".
+    entries: forwarder entries from collect_exports(); each export line
+    points at the entry's own target module. pivot True/False on
+    use_ordinals controls whether pinned ordinals are emitted (none of
+    the extra-source entries carry one anyway).
 
     Args:
-        dll_name: Name of the DLL (e.g., "version.dll")
-        exports: List of tuples (function_name, ordinal)
-        use_ordinals: Pin ordinals on named exports (default: True)
-        target_module: Module to forward to (default: GLOBALROOT system path)
+        dll_name: Name of the proxy DLL (identity, e.g. "version.dll")
+        entries: Forwarder entries
+        use_ordinals: Pin ordinals where available (default: True)
 
     Returns:
         String containing the .def file content
     """
-    com_functions = {
-        'DllCanUnloadNow', 'DllGetClassObject', 'DllInstall',
-        'DllRegisterServer', 'DllUnregisterServer'
-    }
-
-    # Same forward target the MSVC pragma output uses
-    dllpath = forward_targets(dll_name, target_module)[0]
+    targets = []
+    for e in entries:
+        if e['tgt']['forward'] not in targets:
+            targets.append(e['tgt']['forward'])
 
     lines = [
         f"; Auto-generated GNU ld forwarding file for {dll_name}",
         "; Generated by extract_exports.py (--def)",
-        f"; Original DLL Path: {dllpath}",
-        f'LIBRARY "{dll_name}"',
-        "EXPORTS",
-        "",
+        f"; Targets: {len(targets)} module(s) - "
+        + ", ".join(targets),
     ]
+    if any(e['ordinal'] is None for e in entries):
+        lines.append("; Extra-source exports are name-only (auto ordinals)")
+    lines += [f'LIBRARY "{dll_name}"', "EXPORTS", ""]
 
-    for func_name, ordinal in exports:
-        if func_name is None:
-            # Ordinal-only export: no name at all, forward by ordinal (#N)
-            line = (f'"__proxy{ordinal}" = "{dllpath}"."#{ordinal}" '
-                    f"@{ordinal} NONAME")
-        else:
-            line = f'"{func_name}" = "{dllpath}"."{func_name}"'
-            if use_ordinals:
-                line += f" @{ordinal}"
-            if func_name in com_functions:
-                line += " PRIVATE"
+    for e in entries:
+        target = e['tgt']['forward']
+        if e['name'] is None:
+            lines.append(f'"__proxy{e['ordinal']}" = "{target}"."#{e['ordinal']}" '
+                         f"@{e['ordinal']} NONAME")
+            continue
+        line = f'"{e["name"]}" = "{target}"."{e["name"]}"'
+        if use_ordinals and e['ordinal'] is not None:
+            line += f" @{e['ordinal']}"
+        if e['private']:
+            line += " PRIVATE"
         lines.append(line)
 
     lines.append("")
     return "\n".join(lines)
 
 
-def generate_runtime_header(dll_name, exports, target_module=None):
+def generate_runtime_header(dll_name, entries):
     """
     Generate runtime forwarding header file.
     Uses LoadLibrary + GetProcAddress for export resolution.
+
+    entries: forwarder entries from collect_exports(). Every unique
+    target module is loaded once in LoadOriginalDLL() - the identity
+    source from the system directory by default (or from the custom
+    forward target), extra sources from their module path - and every
+    export pointer is resolved from ITS OWN module.
 
     Thunks: MSVC builds pair this header with a separate
     <name>_runtime.asm (MASM) and pragma export directives; MinGW-w64
     builds use the GNU naked stubs inside this header plus a generated
     <name>_runtime.def export mapping.
-
-    This method resolves exports at runtime, under our own control,
-    instead of leaving it to the PE loader.
-    
-    Args:
-        dll_name: Name of the DLL (e.g., "winmm.dll")
-        exports: List of tuples (function_name, ordinal)
-    
-    Returns:
-        String containing the runtime header file content
     """
     base_name = dll_name.replace('.dll', '').upper()
     short_name = dll_name.replace('.dll', '')
-    
-    # COM functions that need PRIVATE flag
-    com_functions = {
-        'DllCanUnloadNow', 'DllGetClassObject', 'DllInstall',
-        'DllRegisterServer', 'DllUnregisterServer'
-    }
-    
-    # Categorize exports
-    regular_exports = []
-    private_exports = []
-    ordinal_only_exports = []
-    
-    for func_name, ordinal in exports:
-        if func_name is None:
-            ordinal_only_exports.append(ordinal)
-        elif func_name in com_functions:
-            private_exports.append((func_name, ordinal))
-        else:
-            regular_exports.append((func_name, ordinal))
-    
-    all_named = regular_exports + private_exports
-    total = len(all_named) + len(ordinal_only_exports)
-    
-    # --- Build header ---
+
+    # Unique load specs, in first-seen order (identity source first)
+    load_specs = []
+    for e in entries:
+        spec = (e['tgt']['load_direct'], e['tgt']['load_name'])
+        if spec not in load_specs:
+            load_specs.append(spec)
+
+    noname_entries = [e for e in entries if e['name'] is None]
+    named_entries = [e for e in entries if e['name'] is not None]
+    total = len(entries)
+
     header = f"""#pragma once
 /*
  * Auto-generated RUNTIME export forwarding header for {dll_name}
  * Generated by extract_exports.py (runtime mode)
  *
- * Total Exports: {total} ({len(all_named)} named + {len(ordinal_only_exports)} ordinal-only)
- * Method: Runtime forwarding (LoadLibrary + GetProcAddress + jump thunks)
+ * Total Exports: {total} ({len(named_entries)} named + {len(noname_entries)} ordinal-only)
+ * Modules loaded: {len(load_specs)}
  * Architecture: x64 only
  *
  * Unlike linker forwarding, exports are resolved at runtime under our
  * own control instead of by the PE loader.
- *
- * Thunks: {short_name}_runtime.asm (MASM, MSVC builds) or the GNU naked
- * stubs inside this header (MinGW-w64 builds). Exported names map to
- * thunks via MSVC pragmas or proxy_exports.def respectively.
  */
 
 #ifndef {base_name}_RUNTIME_H
@@ -409,17 +428,18 @@ def generate_runtime_header(dll_name, exports, target_module=None):
 // ============================================================
 extern "C" {{
 """
-    
+
     # Function pointer declarations
-    for func_name, ordinal in all_named:
-        header += f"    FARPROC orig_{func_name} = NULL;\n"
-    
-    for ordinal in ordinal_only_exports:
-        header += f"    FARPROC orig___proxy_ord{ordinal} = NULL;\n"
-    
+    for e in entries:
+        name = e['name']
+        if name is None:
+            header += f"    FARPROC orig___proxy_ord{e['ordinal']} = NULL;\n"
+        else:
+            header += f"    FARPROC orig_{name} = NULL;\n"
+
     header += "}\n\n"
-    
-    # Export wiring is toolchain-specific:
+
+    # Export wiring: toolchain-specific.
     #   MSVC: pragma directives map exported names to the ASM thunks.
     #   MinGW-w64: a generated .def file does the same mapping
     #   (proxy_exports.def, see generate_runtime_def) and the thunks
@@ -429,12 +449,14 @@ extern "C" {{
     header += "// ============================================================\n\n"
 
     header += "#if defined(_MSC_VER)\n"
-    for func_name, ordinal in all_named:
-        private_flag = ",PRIVATE" if func_name in com_functions else ""
-        header += f'#pragma comment(linker, "/EXPORT:{func_name}=__proxy_{func_name},@{ordinal}{private_flag}")\n'
-
-    for ordinal in ordinal_only_exports:
-        header += f'#pragma comment(linker, "/EXPORT:__proxy_ord{ordinal}=__proxy_ord{ordinal},@{ordinal},NONAME")\n'
+    for e in entries:
+        if e['name'] is None:
+            o = e['ordinal']
+            header += f'#pragma comment(linker, "/EXPORT:__proxy_ord{o}=__proxy_ord{o},@{o},NONAME")\n'
+            continue
+        private_flag = ",PRIVATE" if e['private'] else ""
+        ord_flag = f",@{e['ordinal']}" if e['ordinal'] is not None else ""
+        header += f'#pragma comment(linker, "/EXPORT:{e["name"]}=__proxy_{e["name"]}{ord_flag}{private_flag}")\n'
     header += "#endif\n"
 
     header += """#if defined(__GNUC__) && !defined(_MSC_VER)
@@ -444,64 +466,67 @@ extern "C" {{
 // GCC supports the naked attribute on x86_64 (>= GCC 8), which
 // guarantees no prologue is emitted for the stubs.
 """
-    for func_name, ordinal in all_named:
-        header += f'extern "C" __attribute__((naked)) void __proxy_{func_name}(void) {{ __asm__ volatile ("jmp *orig_{func_name}(%rip)"); }}\n'
-
-    for ordinal in ordinal_only_exports:
-        header += f'extern "C" __attribute__((naked)) void __proxy_ord{ordinal}(void) {{ __asm__ volatile ("jmp *orig___proxy_ord{ordinal}(%rip)"); }}\n'
+    for e in entries:
+        if e['name'] is None:
+            header += f'extern "C" __attribute__((naked)) void __proxy_ord{e["ordinal"]}(void) {{ __asm__ volatile ("jmp *orig___proxy_ord{e["ordinal"]}(%rip)"); }}\n'
+            continue
+        header += f'extern "C" __attribute__((naked)) void __proxy_{e["name"]}(void) {{ __asm__ volatile ("jmp *orig_{e["name"]}(%rip)"); }}\n'
 
     header += "#endif\n"
-    
-    # Where the original module is loaded from at runtime: the system
-    # directory by default, or the custom forward target verbatim
-    # (a plain module name resolves in the loading application's
-    # directory first - the classic same-folder layout)
-    if target_module:
-        load_block = (f'    HMODULE hOriginal = LoadLibraryA("'
-                      f'{forward_targets(dll_name, target_module)[1]}");')
-    else:
-        load_block = (
-            '    // Get System32 directory dynamically (works on all '
-            'Windows installs)\n'
-            '    char sysDir[MAX_PATH];\n'
-            '    GetSystemDirectoryA(sysDir, MAX_PATH);\n\n'
-            '    char dllPath[MAX_PATH];\n'
-            f'    sprintf_s(dllPath, MAX_PATH, "%s\\\\{dll_name}", '
-            'sysDir);\n\n'
-            '    HMODULE hOriginal = LoadLibraryA(dllPath);')
 
-    # LoadOriginalDLL function
-    header += f"""
+    # ---- LoadOriginalDLL: load every target module, resolve by module ----
+    header += """
 // ============================================================
-// Load original DLL and resolve all function pointers
+// Load the target module(s) and resolve all function pointers
 // Call this from DllMain(DLL_PROCESS_ATTACH)
 // ============================================================
-inline bool LoadOriginalDLL() {{
-{load_block}
-    if (!hOriginal) {{
-        return false;
-    }}
-
-    // Resolve all function pointers
 """
-    
-    for func_name, ordinal in all_named:
-        header += f'    orig_{func_name} = GetProcAddress(hOriginal, "{func_name}");\n'
-    
-    for ordinal in ordinal_only_exports:
-        header += f'    orig___proxy_ord{ordinal} = GetProcAddress(hOriginal, MAKEINTRESOURCEA({ordinal}));\n'
-    
-    header += f"""
-    return true;
+    for idx, (direct, load_name) in enumerate(load_specs):
+        if direct:
+            c = direct.replace('\\', '\\\\')
+            header += f"static HMODULE LoadOriginal_{idx}() {{ return LoadLibraryA(\"{c}\"); }}\n"
+        else:
+            header += f"""static HMODULE LoadOriginal_{idx}() {{
+    // Get System32 directory dynamically (works on all Windows installs)
+    char sysDir[MAX_PATH];
+    GetSystemDirectoryA(sysDir, MAX_PATH);
+
+    char dllPath[MAX_PATH];
+    sprintf_s(dllPath, MAX_PATH, "%s\\\\{load_name}", sysDir);
+
+    return LoadLibraryA(dllPath);
 }}
-
-#endif // {base_name}_RUNTIME_H
 """
-    
+
+    header += """
+inline bool LoadOriginalDLL() {
+"""
+    for idx in range(len(load_specs)):
+        header += f"    HMODULE hOriginal_{idx} = LoadOriginal_{idx}();\n"
+    header += "\n"
+    for idx in range(len(load_specs)):
+        header += f"    if (!hOriginal_{idx}) {{\n        return false;\n    }}\n"
+    header += """
+    // Resolve every pointer from the module that owns it
+"""
+    for e in entries:
+        idx = load_specs.index((e['tgt']['load_direct'], e['tgt']['load_name']))
+        if e['name'] is None:
+            header += (f'    orig___proxy_ord{e["ordinal"]} = '
+                       f'GetProcAddress(hOriginal_{idx}, MAKEINTRESOURCEA({e["ordinal"]}));\n')
+            continue
+        header += f'    orig_{e["name"]} = GetProcAddress(hOriginal_{idx}, "{e["name"]}");\n'
+
+    header += """
+    return true;
+}
+
+#endif // """ + base_name + "_RUNTIME_H\n"
+
     return header
 
 
-def generate_runtime_def(dll_name, exports):
+def generate_runtime_def(dll_name, entries):
     """
     Generate a GNU ld .def file mapping the proxy's exported names to
     the runtime thunks (MinGW-w64 runtime mode).
@@ -513,16 +538,11 @@ def generate_runtime_def(dll_name, exports):
 
     Args:
         dll_name: Name of the DLL (e.g., "winmm.dll")
-        exports: List of tuples (function_name, ordinal)
+        entries: Forwarder entries from collect_exports()
 
     Returns:
         String containing the runtime .def file content
     """
-    com_functions = {
-        'DllCanUnloadNow', 'DllGetClassObject', 'DllInstall',
-        'DllRegisterServer', 'DllUnregisterServer'
-    }
-
     lines = [
         f"; Auto-generated GNU ld export mapping for the {dll_name} runtime proxy",
         "; Generated by extract_exports.py (--def --runtime)",
@@ -533,15 +553,18 @@ def generate_runtime_def(dll_name, exports):
         "",
     ]
 
-    for func_name, ordinal in exports:
-        if func_name is None:
+    for e in entries:
+        ordinal = e['ordinal']
+        if e['name'] is None:
             # Ordinal-only export: thunk + NONAME at the same ordinal
             thunk = f"__proxy_ord{ordinal}"
             lines.append(f'"{thunk}" = "{thunk}" @{ordinal} NONAME')
         else:
-            thunk = f"__proxy_{func_name}"
-            line = f'"{func_name}" = "{thunk}" @{ordinal}'
-            if func_name in com_functions:
+            thunk = f"__proxy_{e['name']}"
+            line = f'"{e["name"]}" = "{thunk}"'
+            if ordinal is not None:
+                line += f" @{ordinal}"
+            if e['private']:
                 line += " PRIVATE"
             lines.append(line)
 
@@ -549,42 +572,21 @@ def generate_runtime_def(dll_name, exports):
     return "\n".join(lines)
 
 
-def generate_runtime_asm(dll_name, exports):
+def generate_runtime_asm(dll_name, entries):
     """
     Generate MASM x64 assembly file with jump thunks for runtime forwarding.
     Each thunk is a simple indirect JMP through a function pointer.
 
     Args:
         dll_name: Name of the DLL (e.g., "winmm.dll")
-        exports: List of tuples (function_name, ordinal)
+        entries: Forwarder entries from collect_exports()
 
     Returns:
         String containing the ASM file content
     """
     short_name = dll_name.replace('.dll', '')
-    
-    # COM functions
-    com_functions = {
-        'DllCanUnloadNow', 'DllGetClassObject', 'DllInstall',
-        'DllRegisterServer', 'DllUnregisterServer'
-    }
-    
-    # Categorize exports
-    regular_exports = []
-    private_exports = []
-    ordinal_only_exports = []
-    
-    for func_name, ordinal in exports:
-        if func_name is None:
-            ordinal_only_exports.append(ordinal)
-        elif func_name in com_functions:
-            private_exports.append((func_name, ordinal))
-        else:
-            regular_exports.append((func_name, ordinal))
-    
-    all_named = regular_exports + private_exports
-    total = len(all_named) + len(ordinal_only_exports)
-    
+    total = len(entries)
+
     # --- Build ASM ---
     asm = f"""; Auto-generated RUNTIME forwarding thunks for {dll_name}
 ; Generated by extract_exports.py (runtime mode)
@@ -599,29 +601,30 @@ def generate_runtime_asm(dll_name, exports):
 
 .data
 """
-    
+
     # EXTERNDEF declarations
-    for func_name, ordinal in all_named:
-        asm += f"EXTERNDEF orig_{func_name} : QWORD\n"
-    
-    for ordinal in ordinal_only_exports:
-        asm += f"EXTERNDEF orig___proxy_ord{ordinal} : QWORD\n"
-    
+    for e in entries:
+        if e['name'] is None:
+            asm += f"EXTERNDEF orig___proxy_ord{e['ordinal']} : QWORD\n"
+        else:
+            asm += f"EXTERNDEF orig_{e['name']} : QWORD\n"
+
     asm += "\n.code\n\n"
-    
+
     # Jump thunks
-    for func_name, ordinal in all_named:
-        asm += f"__proxy_{func_name} PROC\n"
-        asm += f"    jmp QWORD PTR [orig_{func_name}]\n"
-        asm += f"__proxy_{func_name} ENDP\n\n"
-    
-    for ordinal in ordinal_only_exports:
-        asm += f"__proxy_ord{ordinal} PROC\n"
-        asm += f"    jmp QWORD PTR [orig___proxy_ord{ordinal}]\n"
-        asm += f"__proxy_ord{ordinal} ENDP\n\n"
-    
+    for e in entries:
+        if e['name'] is None:
+            o = e['ordinal']
+            asm += f"__proxy_ord{o} PROC\n"
+            asm += f"    jmp QWORD PTR [orig___proxy_ord{o}]\n"
+            asm += f"__proxy_ord{o} ENDP\n\n"
+            continue
+        asm += f"__proxy_{e['name']} PROC\n"
+        asm += f"    jmp QWORD PTR [orig_{e['name']}]\n"
+        asm += f"__proxy_{e['name']} ENDP\n\n"
+
     asm += "END\n"
-    
+
     return asm
 
 
@@ -733,42 +736,27 @@ def save_runtime_def(dll_name, def_content, output_dir=None):
     return def_path
 
 
-def print_export_summary(dll_name, exports):
-    """Print a summary of extracted exports."""
-    print(f"\n{'='*60}")
-    print(f"DLL: {dll_name}")
-    print(f"{'='*60}")
-    print(f"Total Exports: {len(exports)}")
-    print(f"\nFirst 10 exports:")
-    print(f"{'Ordinal':<10} {'Function Name'}")
-    print(f"{'-'*60}")
-    
-    for func_name, ordinal in exports[:10]:
-        display_name = func_name if func_name else "(ordinal-only)"
-        print(f"{ordinal:<10} {display_name}")
-    
-    if len(exports) > 10:
-        print(f"... and {len(exports) - 10} more")
-    print(f"{'='*60}\n")
-
-
 def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
-                runtime=False, def_out=False, target_module=None):
+                runtime=False, def_out=False, target_module=None,
+                extra_sources=None):
     """
-    Process a single DLL: extract exports and generate the output files.
+    Process one identity DLL (plus optional extra DLLs): extract exports,
+    merge them into a single export set and generate the output files.
 
     Args:
-        dll_arg: Path to the DLL file to extract exports from
+        dll_arg: Path to the identity DLL file (drives the proxy name)
         output_dir: Custom output directory for generated files
         verbose: Print detailed information
-        use_ordinals: Include ordinals in exports (default: True)
+        use_ordinals: Pin ordinals where available (default: True)
         runtime: Also generate runtime forwarding files
                  (.h + .asm for MSVC; .h + .def for MinGW-w64 when
                  def_out is set - GNU thunks live in the header)
         def_out: Generate GNU ld .def output (MinGW-w64) instead of the
                  MSVC pragma header
-        target_module: Module the proxy forwards to (default: the
-                 GLOBALROOT system module matching the source's name)
+        target_module: Forward module for the identity source (default:
+                 its GLOBALROOT system module)
+        extra_sources: Additional DLL paths whose exports are merged in,
+                 name-only, each forwarded to its own module
 
     Returns:
         True if successful, False otherwise
@@ -776,34 +764,45 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
     dll_path = resolve_dll_source(dll_arg)
     if dll_path is None:
         return False
-    
+
     dll_name = os.path.basename(str(dll_path)).lower()
-    
+
+    # Build the source list: identity first, then the extra sources
+    sources = [(dll_path, target_module)]
+    for extra in (extra_sources or []):
+        extra_path = resolve_dll_source(extra)
+        if extra_path is None:
+            return False
+        sources.append((extra_path, None))
+
     if verbose:
-        print(f"Processing: {dll_path}")
-        print(f"Proxy target at runtime: \\\\.\\GLOBALROOT\\SystemRoot\\System32\\{dll_name}")
-    
-    # Extract exports
-    exports = extract_exports(dll_path)
-    if exports is None:
+        print(f"Processing: {dll_path} (+{len(sources) - 1} extra source(s))")
+
+    entries, warnings = collect_exports(sources, verbose=verbose)
+    if entries is None:
+        print("Error: failed to extract exports")
         return False
-    
-    if len(exports) == 0:
-        print(f"Warning: No exports found in '{dll_name}'")
+    if not entries:
+        print("Warning: no usable exports found across the given sources")
         return False
-    
-    # Print summary
+
     if verbose:
-        print_export_summary(dll_name, exports)
-    
+        targets = []
+        for e in entries:
+            if e['tgt']['forward'] not in targets:
+                targets.append(e['tgt']['forward'])
+        print(f"Exports: {len(entries)} -> {len(targets)} target module(s)")
+        for t in targets:
+            print(f"  -> {t}")
+
     # Generate the toolchain-specific output files
     if def_out and runtime:
         # MinGW-w64 runtime bundle: runtime header (GNU naked thunks
         # included, MSVC pragmas gated out) + thunk-mapping .def.
         # No MASM assembly and no pragma/forwarder files.
-        rt_header = generate_runtime_header(dll_name, exports, target_module)
+        rt_header = generate_runtime_header(dll_name, entries)
         rt_header_path, _ = save_runtime_files(dll_name, rt_header, None, output_dir)
-        rt_def_content = generate_runtime_def(dll_name, exports)
+        rt_def_content = generate_runtime_def(dll_name, entries)
         rt_def_path = save_runtime_def(dll_name, rt_def_content, output_dir)
 
         if verbose:
@@ -811,9 +810,9 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
             print("✓ Local build:\n"
                   "    cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows "
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
-                  f"-DDLL_SOURCE=/path/to/{dll_name} -DPROXY_METHOD=runtime")
+                  f"-DDLL_SOURCE={dll_path} -DPROXY_METHOD=runtime")
     elif def_out:
-        def_content = generate_def(dll_name, exports, use_ordinals, target_module)
+        def_content = generate_def(dll_name, entries, use_ordinals)
         def_path = save_def(dll_name, def_content, output_dir)
 
         if verbose:
@@ -821,9 +820,9 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
             print("✓ Local build:\n"
                   "    cmake -B build -G Ninja -DCMAKE_SYSTEM_NAME=Windows "
                   f"-DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ "
-                  f"-DDLL_SOURCE=/path/to/{dll_name}")
+                  f"-DDLL_SOURCE={dll_path}")
     else:
-        header_content = generate_header(dll_name, exports, use_ordinals, target_module)
+        header_content = generate_header(dll_name, entries, use_ordinals)
         header_path = save_header(dll_name, header_content, output_dir)
 
         if verbose:
@@ -831,8 +830,8 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
 
         # Generate runtime forwarding files (MSVC/MASM, if requested)
         if runtime:
-            rt_header = generate_runtime_header(dll_name, exports, target_module)
-            rt_asm = generate_runtime_asm(dll_name, exports)
+            rt_header = generate_runtime_header(dll_name, entries)
+            rt_asm = generate_runtime_asm(dll_name, entries)
             rt_header_path, rt_asm_path = save_runtime_files(
                 dll_name, rt_header, rt_asm, output_dir
             )
@@ -843,7 +842,7 @@ def process_dll(dll_arg, output_dir=None, verbose=True, use_ordinals=True,
 
     if verbose and not def_out:
         method_info = " -DPROXY_METHOD=runtime" if runtime else ""
-        print(f"✓ Ready to use in CMake with -DDLL_SOURCE=<path to {dll_name}>{method_info}\n")
+        print(f"✓ Ready to use in CMake with -DDLL_SOURCE={dll_path}{method_info}\n")
 
     return True
 
@@ -915,6 +914,16 @@ Usage from CMake (generation runs automatically at configure time):
     )
 
     parser.add_argument(
+        '--source',
+        action='append',
+        dest='extra_sources',
+        metavar='DLL',
+        help='Additional DLL to merge into the same proxy (repeatable). '
+             'Its exports are name-only (no ordinals) and forward to its '
+             'own module. The first positional file stays the identity.'
+    )
+
+    parser.add_argument(
         '--target',
         metavar='MODULE',
         help='Module the proxy forwards to (default: '
@@ -933,7 +942,8 @@ Usage from CMake (generation runs automatically at configure time):
     if args.dll_file:
         success = process_dll(args.dll_file, args.output, verbose=not args.quiet,
                             use_ordinals=use_ordinals, runtime=args.runtime,
-                            def_out=args.def_file, target_module=args.target)
+                            def_out=args.def_file, target_module=args.target,
+                            extra_sources=args.extra_sources)
         return 0 if success else 1
     
     # No arguments provided

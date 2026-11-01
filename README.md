@@ -55,6 +55,11 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
 
 ## Requirements
 
+> Note for all builds: re-running configure in the same `build` directory
+> overwrites the previous output, but CMake **cache values persist**
+> (e.g. `PROXY_METHOD`) - pass every flag you need on each run, or start
+> from a clean directory.
+
 ### Windows (MSVC)
 
 - **Compiler**: MSVC (Visual Studio 2019+ or Build Tools)
@@ -63,7 +68,7 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
   project root, shared by all builds - it never touches your system or
   global Python)
 - **Target**: Windows x64 only
-- **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
+- **Source DLL**: any x64 DLL file, passed with `DLL_SOURCE`
   (the proxy is named after it)
 
 ### Linux (MinGW-w64 cross-build)
@@ -74,18 +79,18 @@ See [tools/README.md](tools/README.md) for how the export extraction works.
   - Fedora: `sudo dnf install mingw64-gcc`
 - **Build**: CMake 3.15+ and make (or Ninja)
 - **Python**: 3.8+ (same `tooling_venv` rule as on Windows)
-- **Source DLL**: any x64 system DLL file, passed with `DLL_SOURCE`
+- **Source DLL**: any x64 DLL file, passed with `DLL_SOURCE`
   (the proxy is named after it)
 
 ### Windows (Local Build)
 
 ```bash
 # Linker forwarding (default, simple)
-cmake -B build -DDLL_SOURCE=C:\Windows\System32\version.dll
+cmake -B build -DDLL_SOURCE=/path/to/version.dll
 cmake --build build --config Release
 
 # Runtime forwarding (maximum compatibility)
-cmake -B build -DDLL_SOURCE=C:\Windows\System32\winmm.dll -DPROXY_METHOD=runtime
+cmake -B build -DDLL_SOURCE=/path/to/winmm.dll -DPROXY_METHOD=runtime
 cmake --build build --config Release
 ```
 
@@ -121,7 +126,7 @@ points the forwarders at it:
 ```bash
 cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
       -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
-      -DDLL_SOURCE=$PWD/<target>.dll \
+      -DDLL_SOURCE=<target>.dll \
       -DFORWARD_TARGET_PATH=<target>_orig.dll
 cmake --build build
 ```
@@ -129,6 +134,29 @@ cmake --build build
 - A plain module name in `FORWARD_TARGET_PATH` is resolved in the
   application's directory first (an absolute path works too).
 - Same flags apply on Windows with MSVC too.
+
+### Combining Multiple DLLs into One Proxy
+
+`DLL_SOURCE` accepts several file paths separated by `;`. The **first**
+entry is the proxy's identity (file name + default forward target);
+each following entry's exports are merged into the same table, forwarded
+to its own module:
+
+```bash
+cmake -B build -DCMAKE_SYSTEM_NAME=Windows \
+      -DCMAKE_CXX_COMPILER=x86_64-w64-mingw32-g++ \
+      -DDLL_SOURCE="/path/to/winmm.dll;/path/to/version.dll"
+cmake --build build
+```
+
+- The identity source keeps its original ordinals (and its NONAME
+  ordinal-only exports); additional sources are **name-only** - two
+  modules cannot share one ordinal space, so their ordinals are
+  auto-assigned and by-ordinal imports to them will not resolve.
+- Duplicate export names resolve to the earliest source (with a
+  warning); duplicate module names are rejected.
+- Both methods work; runtime mode loads and resolves each module
+  separately. Same flags apply on Windows with MSVC too.
 
 ## Usage
 

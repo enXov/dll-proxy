@@ -24,6 +24,11 @@ code changes**. Any x64 DLL with an export directory works, e.g.:
 `version.dll`, `winmm.dll`, `winhttp.dll`, `wininet.dll`, `wintrust.dll`,
 `xinput1_3.dll`, ...
 
+`DLL_SOURCE` can also list several files (`;`-separated in CMake) to merge
+several modules into one proxy - the first is the identity (ordinals kept),
+the rest are merged name-only. See "Combining Multiple DLLs into One Proxy"
+in the repo README.
+
 **Where the generated files land:** the CMake build directory
 (`build/exports/`), never the source tree. They are regenerated on every
 configure and the build directory can be deleted freely.
@@ -66,6 +71,9 @@ Options:
   --runtime             Also generate runtime forwarding files
                         (.h + .asm for MSVC, .h + .def when paired with --def)
   --def                 Generate GNU ld .def output (MinGW-w64)
+  --source DLL          Additional DLL to merge into the same proxy
+                        (repeatable; its exports are name-only and
+                        forward to its own module)
   --target MODULE       Module the proxy forwards to (default: the
                         GLOBALROOT system module of the source's name).
                         For private DLLs, point it at the renamed original
